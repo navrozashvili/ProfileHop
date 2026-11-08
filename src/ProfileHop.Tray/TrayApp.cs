@@ -18,6 +18,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 {
     private const uint WmTray = PInvoke.WM_APP + 1;
     private const uint WmStatus = PInvoke.WM_APP + 2;
+    private const uint WmDevices = PInvoke.WM_APP + 3;
     private const uint NinKeySelect = PInvoke.NIN_SELECT | 0x1; // NINF_KEY
     private const uint ModNoRepeat = 0x4000;
     private const uint DbtDevtypDeviceInterface = 5;
@@ -26,7 +27,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     // GUID_DEVINTERFACE_HID
     private static readonly Guid HidInterfaceGuid = new(0x4D1E55B2, 0xF16F, 0x11CF, 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30);
 
-    private const int CmdReload = 1, CmdOpenFolder = 2, CmdAutostart = 3, CmdExit = 4, CmdHotkeys = 5, CmdProfileBase = 1000;
+    private const int CmdReload = 1, CmdOpenFolder = 2, CmdAutostart = 3, CmdExit = 4, CmdHotkeys = 5,
+        CmdDeviceAuto = 6, CmdRescan = 7, CmdDeviceBase = 500, CmdProfileBase = 1000;
 
     private static TrayApp? s_app;
 
@@ -45,6 +47,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private WorkerStatus _shown = WorkerStatus.Starting;
     private bool _iconAdded;
     private bool _exiting;
+    private HMENU _deviceMenu;          // Device submenu while the context menu is open; filled on WM_INITMENUPOPUP
+    private bool _deviceMenuFilled;
+    private IReadOnlyList<DeviceMenuItem> _deviceItems = [];
+    private bool _rescanPending;
 
     public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart)
     {
@@ -74,6 +80,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         }
 
         _worker.StatusChanged += OnWorkerStatus;
+        _worker.DevicesChanged += OnWorkerDevices;
         _worker.Start();
         _worker.RequestRefresh(); // connect in the background and show the current profile
     }
@@ -93,6 +100,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     public void Dispose()
     {
         _worker.StatusChanged -= OnWorkerStatus;
+        _worker.DevicesChanged -= OnWorkerDevices;
         if (!_hwnd.IsNull) PInvoke.DestroyWindow(_hwnd);
         s_app = null;
     }
@@ -153,6 +161,14 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
             case WmStatus:
                 ShowStatus(_worker.Status);
+                return new LRESULT(0);
+
+            case WmDevices:
+                OnDevicesListed();
+                return new LRESULT(0);
+
+            case PInvoke.WM_INITMENUPOPUP:
+                if (!_deviceMenu.IsNull && (nint)wParam.Value == (nint)_deviceMenu.Value && !_deviceMenuFilled) FillDeviceMenu();
                 return new LRESULT(0);
 
             case WmTray:
@@ -312,8 +328,11 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     private void OnWorkerStatus(WorkerStatus status) => PInvoke.PostMessage(_hwnd, WmStatus, default, default); // marshal to UI
 
+    private void OnWorkerDevices(IReadOnlyList<ProfileHop.Core.KnownDevice> devices) => PInvoke.PostMessage(_hwnd, WmDevices, default, default);
+
     private void ShowStatus(WorkerStatus status)
     {
+        _rescanPending = false; // a rescan always ends with a status; WmDevices (posted first) already reported success
         var previous = _shown;
         _shown = status;
         UpdateIcon();
@@ -424,6 +443,12 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 Append(menu, flags, (nuint)(CmdProfileBase + p), TrayText.MenuLabel(p, _config.Profiles));
             }
             Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+            // Filled on WM_INITMENUPOPUP from the worker's cached device list; the request below reads the last scan
+            // (no device I/O) so the list is fresh by the time the submenu is opened.
+            _deviceMenu = PInvoke.CreatePopupMenu();
+            _deviceMenuFilled = false;
+            _worker.RequestDevices(rescan: false);
+            Append(menu, MENU_ITEM_FLAGS.MF_POPUP, (nuint)(nint)_deviceMenu.Value, "&Device");
             Append(menu, MENU_ITEM_FLAGS.MF_STRING, CmdHotkeys, "&Hotkeys…");
             Append(menu, MENU_ITEM_FLAGS.MF_STRING, CmdReload, "&Reload config");
             Append(menu, MENU_ITEM_FLAGS.MF_STRING, CmdOpenFolder, "&Open config folder");
@@ -432,16 +457,68 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             Append(menu, MENU_ITEM_FLAGS.MF_STRING, CmdExit, "E&xit");
 
             PInvoke.SetForegroundWindow(_hwnd); // so the menu closes when clicking elsewhere
+            // No TPM_NONOTIFY: WM_INITMENUPOPUP is needed for the Device submenu. TPM_RETURNCMD still suppresses WM_COMMAND.
             var cmd = PInvoke.TrackPopupMenu(menu,
-                TRACK_POPUP_MENU_FLAGS.TPM_RETURNCMD | TRACK_POPUP_MENU_FLAGS.TPM_RIGHTBUTTON | TRACK_POPUP_MENU_FLAGS.TPM_NONOTIFY,
+                TRACK_POPUP_MENU_FLAGS.TPM_RETURNCMD | TRACK_POPUP_MENU_FLAGS.TPM_RIGHTBUTTON,
                 x, y, 0, _hwnd, null).Value;
             PInvoke.PostMessage(_hwnd, PInvoke.WM_NULL, default, default);
+            _deviceMenu = default; // destroyed with its parent below
             if (cmd != 0) Execute(cmd);
         }
         finally
         {
+            _deviceMenu = default;
             PInvoke.DestroyMenu(menu);
         }
+    }
+
+    private void FillDeviceMenu()
+    {
+        _deviceMenuFilled = true;
+        var devices = _worker.Devices;
+        _deviceItems = TrayText.DeviceMenu(devices, _config.Device);
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (_config.Device is null ? MENU_ITEM_FLAGS.MF_CHECKED : 0), CmdDeviceAuto, "&Automatic");
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+        if (devices is null) Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | MENU_ITEM_FLAGS.MF_GRAYED, 0, "Looking for devices…");
+        else if (devices.Count == 0 && _deviceItems.Count == 0)
+            Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | MENU_ITEM_FLAGS.MF_GRAYED, 0, "No devices found");
+        for (var i = 0; i < _deviceItems.Count && CmdDeviceBase + i < CmdProfileBase; i++)
+        {
+            var item = _deviceItems[i];
+            Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (item.Checked ? MENU_ITEM_FLAGS.MF_CHECKED : 0), (nuint)(CmdDeviceBase + i), item.Label);
+        }
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (_rescanPending ? MENU_ITEM_FLAGS.MF_GRAYED : 0), CmdRescan,
+            _rescanPending ? "Rescanning…" : "&Rescan");
+    }
+
+    private void OnDevicesListed()
+    {
+        if (!_rescanPending) return;
+        _rescanPending = false;
+        var count = _worker.Devices?.Count ?? 0;
+        ShowBalloon("ProfileHop", count switch
+        {
+            0 => "Rescan found no device with onboard profiles.",
+            1 => "Rescan found 1 device. Pick it under Device.",
+            _ => $"Rescan found {count} devices. Pick one under Device.",
+        }, warning: count == 0);
+    }
+
+    private void SelectDevice(string? key)
+    {
+        if (string.Equals(key, _config.Device, StringComparison.OrdinalIgnoreCase)) return;
+        _config.Device = key;
+        try
+        {
+            ConfigStore.Save(_configPath, _config);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
+            ShowBalloon("ProfileHop", $"Device changed but could not be saved: {ex.Message}", warning: true);
+        }
+        _worker.Reconfigure(key, _config.ForceOnboardMode); // drops the connection; the worker reconnects and refreshes
     }
 
     private static void Append(HMENU menu, MENU_ITEM_FLAGS flags, nuint id, string? text)
@@ -472,6 +549,17 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             case CmdExit:
                 PInvoke.DestroyWindow(_hwnd);
                 break;
+            case CmdDeviceAuto:
+                SelectDevice(null);
+                break;
+            case CmdRescan:
+                if (_rescanPending) break;
+                _rescanPending = true;
+                _worker.RequestDevices(rescan: true);
+                break;
+            case >= CmdDeviceBase and < CmdProfileBase:
+                if (cmd - CmdDeviceBase < _deviceItems.Count) SelectDevice(_deviceItems[cmd - CmdDeviceBase].Key);
+                break;
             case >= CmdProfileBase:
                 _worker.RequestProfile(cmd - CmdProfileBase);
                 break;
@@ -482,9 +570,12 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         if (HotkeyDialog.Current is not null) return; // the dialog owns the hotkeys right now
         var loaded = ConfigStore.Load(_configPath);
+        var (oldDevice, oldForce) = (_config.Device, _config.ForceOnboardMode);
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;
         _worker.CycleOverride = _config.Cycle;
+        if (!string.Equals(oldDevice, _config.Device, StringComparison.OrdinalIgnoreCase) || oldForce != _config.ForceOnboardMode)
+            _worker.Reconfigure(_config.Device, _config.ForceOnboardMode);
         var problems = new List<string>(loaded.Errors);
         problems.AddRange(RegisterHotkeys());
         UpdateIcon();

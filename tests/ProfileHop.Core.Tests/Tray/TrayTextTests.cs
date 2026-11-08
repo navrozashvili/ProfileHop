@@ -37,7 +37,45 @@ public class TrayTextTests
     public void Host_mode_is_flagged()
     {
         var status = WorkerStatus.Reachable(new ProfileState(2, 1, [1, 2], null));
-        Assert.Equal("ProfileHop: Normal (profile 1), host mode", TrayText.Tooltip(status, Names));
+        Assert.Equal("ProfileHop: mouse in host mode (close G HUB)", TrayText.Tooltip(status, Names));
+    }
+
+    [Fact]
+    public void Missing_preferred_device_is_flagged()
+    {
+        var status = WorkerStatus.Reachable(new ProfileState(1, 2, [1, 2], null, PreferredDeviceMissing: true));
+        Assert.Equal("ProfileHop: Game (profile 2), chosen device not found", TrayText.Tooltip(status, Names));
+    }
+
+    private static readonly KnownDevice Mouse = new("C54D/PRO X2 SUPERSTRIKE", "PRO X2 SUPERSTRIKE (receiver C54D)", 3, true);
+    private static readonly KnownDevice Keyboard = new("C54D/G&KEYS", "G&KEYS (receiver C54D)", 0, false);
+
+    [Fact]
+    public void Device_menu_lists_devices_marks_in_use_and_checks_preference()
+    {
+        var items = TrayText.DeviceMenu([Mouse, Keyboard], "c54d/g&keys");
+
+        Assert.Equal(
+        [
+            new DeviceMenuItem("PRO X2 SUPERSTRIKE (receiver C54D)  (in use)", "C54D/PRO X2 SUPERSTRIKE", false),
+            new DeviceMenuItem("G&&KEYS (receiver C54D)", "C54D/G&KEYS", true),
+        ], items);
+    }
+
+    [Fact]
+    public void Device_menu_automatic_checks_nothing()
+    {
+        Assert.All(TrayText.DeviceMenu([Mouse, Keyboard], null), i => Assert.False(i.Checked));
+        Assert.Empty(TrayText.DeviceMenu(null, null));
+    }
+
+    [Fact]
+    public void Device_menu_keeps_missing_preference_as_checked_item()
+    {
+        var items = TrayText.DeviceMenu([Mouse], "C547/G502 X PLUS");
+
+        Assert.Equal(new DeviceMenuItem("C547/G502 X PLUS (not found)", "C547/G502 X PLUS", true), items[^1]);
+        Assert.Equal(2, items.Count);
     }
 
     [Fact]

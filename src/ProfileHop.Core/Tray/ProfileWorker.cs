@@ -22,6 +22,10 @@ public sealed class ProfileWorker : IDisposable
     private bool _stale;
     private int? _deviceProfile;
     private int _dpiSteps;
+    private (string? Device, bool ForceOnboard)? _configure;
+    private bool _listDevices;
+    private bool _rescan;
+    private volatile IReadOnlyList<KnownDevice>? _devices;
 
     // Worker-thread state.
     private ProfileState? _lastState;
@@ -41,8 +45,14 @@ public sealed class ProfileWorker : IDisposable
     /// <summary>Raised on the worker thread with the new DPI slot index.</summary>
     public event Action<int>? DpiSlotChanged;
 
+    /// <summary>Raised on the worker thread after <see cref="RequestDevices"/> with the device list.</summary>
+    public event Action<IReadOnlyList<KnownDevice>>? DevicesChanged;
+
     /// <summary>Latest status; safe to read from any thread.</summary>
     public WorkerStatus Status => _status;
+
+    /// <summary>Device list from the last <see cref="RequestDevices"/>, or null before the first; safe from any thread.</summary>
+    public IReadOnlyList<KnownDevice>? Devices => _devices;
 
     /// <summary>Explicit cycle order from config (null/empty = the mouse's enabled profiles). Settable on config reload.</summary>
     public IReadOnlyList<int>? CycleOverride
@@ -77,18 +87,50 @@ public sealed class ProfileWorker : IDisposable
     /// <summary>A HID device arrived or left (WM_DEVICECHANGE) or the PC resumed: drop the connection.</summary>
     public void NotifyDeviceChange() => Post(() => _stale = true);
 
+    /// <summary>Applies a new device preference / forceOnboardMode (reconnects) and refreshes the state.</summary>
+    public void Reconfigure(string? device, bool forceOnboardMode) => Post(() => _configure = (device, forceOnboardMode));
+
+    /// <summary>
+    /// Fetches the device list into <see cref="Devices"/> and raises <see cref="DevicesChanged"/>. Without
+    /// <paramref name="rescan"/> this only reads the last scan's result; with it every receiver is probed and the
+    /// state is refreshed.
+    /// </summary>
+    public void RequestDevices(bool rescan) => Post(() =>
+    {
+        _listDevices = true;
+        _rescan |= rescan;
+    });
+
     /// <summary>Runs one coalesced batch on the calling thread. Returns false when nothing was pending.</summary>
     public bool ProcessPending()
     {
         int? target, deviceProfile;
         int nextCount, dpiSteps;
-        bool refresh, stale;
+        bool refresh, stale, listDevices, rescan;
+        (string? Device, bool ForceOnboard)? configure;
         lock (_lock)
         {
             if (!HasPendingLocked()) return false;
             (target, nextCount, refresh, stale, deviceProfile, dpiSteps) = (_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps);
             (_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
+            (configure, listDevices, rescan) = (_configure, _listDevices, _rescan);
+            (_configure, _listDevices, _rescan) = (null, false, false);
         }
+
+        if (configure is { } cfg)
+        {
+            _log?.Write(LogLevel.Info, $"Device: {cfg.Device ?? "automatic"}, forceOnboardMode {(cfg.ForceOnboard ? "on" : "off")}.");
+            _switcher.Configure(cfg.Device, cfg.ForceOnboard);
+            refresh = true;
+        }
+
+        if (listDevices)
+        {
+            ListDevices(rescan);
+            if (rescan) refresh = true;
+        }
+
+        if (!HasWork(target, nextCount, refresh, stale, deviceProfile, dpiSteps)) return true;
 
         WorkerStatus status;
         try
@@ -183,7 +225,28 @@ public sealed class ProfileWorker : IDisposable
     }
 
     private bool HasPendingLocked() =>
-        _target is not null || _nextCount > 0 || _refresh || _stale || _deviceProfile is not null || _dpiSteps > 0;
+        HasWork(_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps) || _configure is not null || _listDevices;
+
+    private static bool HasWork(int? target, int nextCount, bool refresh, bool stale, int? deviceProfile, int dpiSteps) =>
+        target is not null || nextCount > 0 || refresh || stale || deviceProfile is not null || dpiSteps > 0;
+
+    private void ListDevices(bool rescan)
+    {
+        IReadOnlyList<KnownDevice> devices;
+        try
+        {
+            if (rescan) _log?.Write(LogLevel.Info, "Rescanning devices.");
+            devices = _switcher.ListDevices(rescan);
+        }
+        catch (Exception ex)
+        {
+            _log?.Write(LogLevel.Warning, $"Listing devices failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+        if (rescan) _log?.Write(LogLevel.Info, $"Devices: {(devices.Count == 0 ? "none" : string.Join(", ", devices.Select(d => d.Key)))}.");
+        _devices = devices;
+        DevicesChanged?.Invoke(devices);
+    }
 
     private void Run()
     {
