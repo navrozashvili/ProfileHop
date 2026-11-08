@@ -91,6 +91,12 @@ public interface IProfileSwitcher : IDisposable
     /// </summary>
     IReadOnlyList<KnownDevice> ListDevices(bool rescan);
 
+    /// <summary>
+    /// For exit: cancels for good, from any thread, without waiting. A call in progress stops at its next device probe
+    /// and throws <see cref="OperationCanceledException"/>; later calls throw it too. Dispose still releases the device.
+    /// </summary>
+    void Cancel();
+
     /// <summary>Raised from a background thread when the mouse reports a profile change (e.g. from a mouse button).</summary>
     event Action<int>? ProfileChangedByDevice;
 }

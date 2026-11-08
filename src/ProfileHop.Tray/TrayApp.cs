@@ -37,13 +37,14 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private readonly ProfileWorker _worker;
     private readonly Autostart _autostart;
     private readonly uint _taskbarCreated;
+    private readonly bool _acceptPostedCommands;
     private AppConfig _config;
     private HotkeyPlan _plan = new([], []);
     private readonly List<int> _registered = [];
     private HWND _hwnd;
     private HDEVNOTIFY _devNotify;
     private HICON _icon;
-    private (string Glyph, bool Active) _iconKey;
+    private (string Glyph, bool Active, int Size) _iconKey;
     private WorkerStatus _shown = WorkerStatus.Starting;
     private ProfileHop.Core.ProfileState? _lastState;   // last state the mouse reported (kept while unreachable): profile list and names
     private bool _iconAdded;
@@ -51,10 +52,14 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private HMENU _deviceMenu;          // Device submenu while the context menu is open; filled on WM_INITMENUPOPUP
     private bool _deviceMenuFilled;
     private IReadOnlyList<DeviceMenuItem> _deviceItems = [];
-    private bool _rescanPending;
+    private long _rescanRequest;        // id of the Rescan request awaiting its answer; 0 = none
+    private volatile DeviceListResult? _devicesResult; // latest DevicesChanged result (set on the worker thread)
 
-    public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart)
+    /// <param name="acceptPostedCommands">Run menu ids posted as WM_COMMAND by other processes (only for --no-mouse).</param>
+    public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart,
+        bool acceptPostedCommands = false)
     {
+        _acceptPostedCommands = acceptPostedCommands;
         _configPath = configPath;
         _config = loaded.Config;
         _log = log;
@@ -156,8 +161,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 OnHotkey((int)wParam.Value);
                 return new LRESULT(0);
 
-            case PInvoke.WM_COMMAND: // menu ids also work as posted commands (scripting/tests)
-                Execute((int)(wParam.Value & 0xFFFF));
+            case PInvoke.WM_COMMAND:
+                // The menu returns its choice (TPM_RETURNCMD) and the Hotkeys window has its own window procedure, so a
+                // WM_COMMAND here can only be posted by another process. Ignored, except under --no-mouse (scripted UI tests).
+                if (_acceptPostedCommands) Execute((int)(wParam.Value & 0xFFFF));
                 return new LRESULT(0);
 
             case WmStatus:
@@ -198,6 +205,13 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 }
                 return new LRESULT(1);
 
+            case PInvoke.WM_DPICHANGED:
+            case PInvoke.WM_SETTINGCHANGE:
+            case PInvoke.WM_DISPLAYCHANGE:
+                // Scale or resolution may have changed: redraw the icon if the small-icon size did (cheap no-op otherwise).
+                if (_iconAdded) UpdateIcon();
+                return null; // let DefWindowProc see them too
+
             case PInvoke.WM_DESTROY:
                 Shutdown();
                 PInvoke.PostQuitMessage(0);
@@ -216,6 +230,9 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private void Shutdown()
     {
         _exiting = true;
+        // Before _hwnd is cleared: PostMessage(NULL, ...) would post the worker's events to the worker thread's queue.
+        _worker.StatusChanged -= OnWorkerStatus;
+        _worker.DevicesChanged -= OnWorkerDevices;
         HotkeyDialog.Current?.Close(saved: false);
         UnregisterHotkeys();
         if (!_devNotify.IsNull)
@@ -330,13 +347,23 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     // ---- Tray icon ----
 
-    private void OnWorkerStatus(WorkerStatus status) => PInvoke.PostMessage(_hwnd, WmStatus, default, default); // marshal to UI
+    private void OnWorkerStatus(WorkerStatus status) => PostToUi(WmStatus);
 
-    private void OnWorkerDevices(IReadOnlyList<ProfileHop.Core.KnownDevice> devices) => PInvoke.PostMessage(_hwnd, WmDevices, default, default);
+    private void OnWorkerDevices(DeviceListResult result)
+    {
+        _devicesResult = result;
+        PostToUi(WmDevices);
+    }
+
+    /// <summary>Marshals a worker event to the UI thread; dropped once the window is gone (never posts to HWND NULL).</summary>
+    private void PostToUi(uint msg)
+    {
+        var hwnd = _hwnd; // an event already in flight while Shutdown runs
+        if (!hwnd.IsNull) PInvoke.PostMessage(hwnd, msg, default, default);
+    }
 
     private void ShowStatus(WorkerStatus status)
     {
-        _rescanPending = false; // a rescan always ends with a status; WmDevices (posted first) already reported success
         var previous = _shown;
         _shown = status;
         if (status.State is { } state) _lastState = state;
@@ -389,13 +416,13 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         if (!old.IsNull) PInvoke.DestroyIcon(old);
     }
 
-    /// <summary>Creates the HICON only when glyph or colour changed; returns the replaced icon (to destroy) or null.</summary>
+    /// <summary>Creates the HICON only when glyph, colour or size changed; returns the replaced icon (to destroy) or null.</summary>
     private HICON EnsureIcon()
     {
-        var key = (TrayText.IconGlyph(_shown), _shown.IsReachable);
+        var key = (TrayText.IconGlyph(_shown), _shown.IsReachable, TrayIconRenderer.IconSize(_hwnd));
         if (!_icon.IsNull && key == _iconKey) return default;
         var old = _icon;
-        _icon = TrayIconRenderer.Create(key.Item1, key.Item2);
+        _icon = TrayIconRenderer.Create(key.Item1, key.Item2, key.Item3);
         _iconKey = key;
         return old;
     }
@@ -497,15 +524,22 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (item.Checked ? MENU_ITEM_FLAGS.MF_CHECKED : 0), (nuint)(CmdDeviceBase + i), item.Label);
         }
         Append(_deviceMenu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
-        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (_rescanPending ? MENU_ITEM_FLAGS.MF_GRAYED : 0), CmdRescan,
-            _rescanPending ? "Rescanning…" : "&Rescan");
+        var rescanning = _rescanRequest != 0;
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (rescanning ? MENU_ITEM_FLAGS.MF_GRAYED : 0), CmdRescan,
+            rescanning ? "Rescanning…" : "&Rescan");
     }
 
     private void OnDevicesListed()
     {
-        if (!_rescanPending) return;
-        _rescanPending = false;
-        var count = _worker.Devices?.Count ?? 0;
+        // Only the answer to our own Rescan request reports (a menu listing or an unrelated status change doesn't).
+        if (_devicesResult is not { } result || !result.Answers(_rescanRequest)) return;
+        _rescanRequest = 0;
+        if (result.Error is { } error)
+        {
+            ShowBalloon("ProfileHop", $"Rescan failed: {error}", warning: true);
+            return;
+        }
+        var count = result.Devices.Count;
         ShowBalloon("ProfileHop", count switch
         {
             0 => "Rescan found no device with onboard profiles.",
@@ -562,9 +596,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 SelectDevice(null);
                 break;
             case CmdRescan:
-                if (_rescanPending) break;
-                _rescanPending = true;
-                _worker.RequestDevices(rescan: true);
+                if (_rescanRequest != 0) break;
+                _rescanRequest = _worker.RequestDevices(rescan: true);
                 break;
             case >= CmdDeviceBase and < CmdProfileBase:
                 if (cmd - CmdDeviceBase < _deviceItems.Count) SelectDevice(_deviceItems[cmd - CmdDeviceBase].Key);
