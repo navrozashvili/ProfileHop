@@ -227,6 +227,53 @@ public class ConfigStoreTests
     }
 
     [Fact]
+    public void Failure_mid_write_leaves_the_old_config_intact()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        ConfigStore.Save(path, new AppConfig { Device = "C54D/OLD" });
+        var before = File.ReadAllText(path);
+
+        Assert.Throws<IOException>(() => ConfigStore.Save(path, new AppConfig { Device = "C54D/NEW" }, (stream, bytes) =>
+        {
+            stream.Write(bytes, 0, bytes.Length / 2); // e.g. disk full halfway
+            throw new IOException("disk full");
+        }));
+
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.Equal("C54D/OLD", ConfigStore.Load(path).Config.Device);
+        Assert.False(File.Exists(path + ".tmp")); // the half-written temp file is removed
+    }
+
+    [Fact]
+    public void Save_replaces_via_a_temp_file_and_keeps_a_backup_of_the_previous_file()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        ConfigStore.Save(path, new AppConfig { Device = "C54D/OLD" });
+        var old = File.ReadAllText(path);
+
+        ConfigStore.Save(path, new AppConfig { Device = "C54D/NEW" });
+
+        Assert.Equal("C54D/NEW", ConfigStore.Load(path).Config.Device);
+        Assert.Equal(old, File.ReadAllText(path + ".bak"));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
+    public void First_save_has_no_backup()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+
+        ConfigStore.Save(path, new AppConfig());
+
+        Assert.True(File.Exists(path));
+        Assert.False(File.Exists(path + ".bak"));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
     public void Unwritable_location_reports_error_and_returns_defaults()
     {
         using var dir = new TempDir();

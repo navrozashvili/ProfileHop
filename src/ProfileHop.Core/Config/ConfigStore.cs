@@ -72,11 +72,35 @@ public static class ConfigStore
         return new ConfigLoadResult(config, errors, CreatedDefaults: false);
     }
 
-    public static void Save(string path, AppConfig config)
+    /// <summary>
+    /// Writes <c>config.json.tmp</c> next to <paramref name="path"/>, flushes it to disk, then swaps it in with
+    /// File.Replace, keeping the previous file as <c>config.json.bak</c>. A failure at any point leaves the old file
+    /// as it was.
+    /// </summary>
+    public static void Save(string path, AppConfig config) => Save(path, config, (stream, bytes) => stream.Write(bytes));
+
+    /// <summary><paramref name="write"/> puts the bytes into the temp file (a seam for tests).</summary>
+    internal static void Save(string path, AppConfig config, Action<FileStream, byte[]> write)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(config, WriteContext.AppConfig));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(config, WriteContext.AppConfig);
+        var tmp = path + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                write(stream, bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            if (File.Exists(path)) File.Replace(tmp, path, path + ".bak", ignoreMetadataErrors: true);
+            else File.Move(tmp, path);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     private static void Normalize(AppConfig config, List<string> errors)
