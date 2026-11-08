@@ -89,7 +89,10 @@ public sealed class ProfileWorker : IDisposable
 
     public void RequestRefresh() => Post(() => _refresh = true);
 
-    /// <summary>A HID device arrived or left (WM_DEVICECHANGE) or the PC resumed: drop the connection.</summary>
+    /// <summary>
+    /// A HID device arrived or left (WM_DEVICECHANGE) or the PC resumed: drop the connection and reconnect with one
+    /// refresh. Calls that arrive before the worker gets to them collapse into one reconnect.
+    /// </summary>
     public void NotifyDeviceChange() => Post(() => _stale = true);
 
     /// <summary>Applies a new device preference / forceOnboardMode (reconnects) and refreshes the state.</summary>
@@ -144,7 +147,9 @@ public sealed class ProfileWorker : IDisposable
             {
                 _log?.Write(LogLevel.Debug, "Device change: marking connection stale.");
                 _switcher.MarkStale();
-                if (_status.Kind == WorkerStatusKind.Unreachable) refresh = true;
+                // Reconnect right away (once per batch, however many notifications arrived): the new connection
+                // re-subscribes the mouse's profile-change notifications, so mouse-button switches keep showing.
+                refresh = true;
             }
 
             var state = Apply(target, nextCount, refresh, deviceProfile);
@@ -157,7 +162,7 @@ public sealed class ProfileWorker : IDisposable
                 state = (state ?? _lastState ?? _switcher.GetState()) with { DpiIndex = slot };
             }
 
-            if (state is null) return true; // only a stale mark: nothing new to show
+            if (state is null) return true;
             _lastState = state;
             status = WorkerStatus.Reachable(state);
         }
