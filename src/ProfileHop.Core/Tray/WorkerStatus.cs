@@ -28,7 +28,10 @@ public sealed record WorkerStatus(WorkerStatusKind Kind, ProfileState? State, st
     /// </summary>
     public UserSwitch? User { get; init; }
 
-    /// <summary>True when this batch's switch came from <see cref="ProfileWorker.RequestAutoProfile"/> (no sound).</summary>
+    /// <summary>
+    /// True when this batch's switch came from <see cref="ProfileWorker.RequestAutoProfile"/>, including a failed one
+    /// (unreachable, rejected, host mode), so the tray can stay quiet about automatic attempts.
+    /// </summary>
     public bool Automatic { get; init; }
 
     public bool IsReachable => Kind == WorkerStatusKind.Reachable;

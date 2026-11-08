@@ -990,6 +990,79 @@ public class ProfileWorkerTests
         Assert.All(statuses, s => Assert.Null(s.User));
     }
 
+    [Fact]
+    public void AutoTargetEqualToCurrentIsSentWhenDeviceChangeIsPending()
+    {
+        var (worker, mouse) = Known(2);
+
+        mouse.RaiseDeviceChange(3);
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2"], mouse.Calls);
+        Assert.Equal(2, worker.Status.State!.CurrentProfile);
+        Assert.True(worker.Status.Automatic);
+    }
+
+    [Fact]
+    public void AutoTargetEqualToCurrentIsSentWhenRefreshOrStaleIsPending()
+    {
+        var (worker, mouse) = Known(2);
+
+        worker.RequestRefresh();
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+        worker.NotifyDeviceChange();
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2", "stale", "set 2"], mouse.Calls);
+    }
+
+    [Fact]
+    public void FailedAutoSwitchIsAutomaticWithoutUser()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        mouse.FailWith = new IOException("gone");
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+
+        mouse.FailWith = null;
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.FailSetWith = new Core.Hidpp.HidppProtocolException("not confirmed");
+        worker.RequestAutoProfile(3);
+        worker.ProcessPending();
+
+        mouse.FailSetWith = null;
+        mouse.FailWith = new HostModeException(new ProfileState(2, 0, [1], 4));
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(WorkerStatusKind.Unreachable, statuses[0].Kind);
+        Assert.NotNull(statuses[2].Notice);
+        Assert.Equal(2, statuses[3].State!.OnboardMode);
+        Assert.All([statuses[0], statuses[2], statuses[3]], s =>
+        {
+            Assert.True(s.Automatic);
+            Assert.Null(s.User);
+        });
+        Assert.False(statuses[1].Automatic); // the refresh in between
+    }
+
+    [Fact]
+    public void FailedUserSwitchIsNotAutomatic()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.FailWith = new IOException("gone");
+
+        worker.RequestProfile(2, new("a", true));
+        worker.ProcessPending();
+
+        Assert.False(Assert.Single(statuses).Automatic);
+    }
+
     internal sealed class ListLog : ILog
     {
         public List<(LogLevel Level, string Message)> Lines { get; } = [];

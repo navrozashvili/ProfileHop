@@ -126,7 +126,8 @@ public sealed class ProfileWorker : IDisposable
     /// <summary>
     /// The per-app profile for the new foreground app. Supersedes any pending user request (its
     /// <see cref="UserSwitch"/> is dropped). Skipped on the worker thread when it equals the last confirmed profile,
-    /// so a fast A→B→A that coalesces back to the current profile sends nothing and publishes no status.
+    /// so a fast A→B→A that coalesces back to the current profile sends nothing and publishes no status (unless a
+    /// refresh, reconnect or mouse-side profile change is pending in the same batch: then it is sent).
     /// </summary>
     public void RequestAutoProfile(int profile) => Post(() =>
     {
@@ -205,13 +206,17 @@ public sealed class ProfileWorker : IDisposable
         // A user batch if a UserSwitch is pending, else automatic when the target came from RequestAutoProfile.
         auto &= user is null;
         // The only skip: an automatic target equal to the last confirmed profile (e.g. a coalesced Alt-Tab A→B→A).
-        // Decided here, against the confirmed state, because the UI's last-shown state can be stale.
-        if (auto && steps == 0 && target is int t && t == _lastState?.CurrentProfile)
+        // Decided here, against the confirmed state, because the UI's last-shown state can be stale. Not when a
+        // refresh, reconnect or mouse-side profile change is pending: the confirmed state may no longer hold.
+        if (auto && steps == 0 && target is int t && t == _lastState?.CurrentProfile
+            && !refresh && !stale && deviceProfile is null)
         {
             _log?.Write(LogLevel.Debug, $"Already on profile {t}; not switching.");
             target = null;
         }
         var switching = target is not null || steps != 0;
+        // Failed attempts are marked too, so the tray can silence notices from automatic switches.
+        var automatic = switching && auto;
 
         if (!HasWork(target, steps, refresh, stale, deviceProfile, dpiSteps)) return true;
 
@@ -239,30 +244,30 @@ public sealed class ProfileWorker : IDisposable
 
             if (state is null) return true;
             _lastState = state;
-            // Only a successful switch carries User/Automatic: a failure (catch blocks below) teaches nothing.
+            // Only a successful switch carries User: a failure (catch blocks below) teaches nothing.
             status = WorkerStatus.Reachable(state) with
             {
                 User = switching ? user : null,
-                Automatic = switching && auto,
+                Automatic = automatic,
             };
         }
         catch (ChosenDeviceNotFoundException ex)
         {
-            status = Unreachable(ex) with { MissingDevice = ex.DeviceName };
+            status = Unreachable(ex) with { MissingDevice = ex.DeviceName, Automatic = automatic };
         }
         catch (HostModeException ex)
         {
             _log?.Write(LogLevel.Warning, $"Not switching: {ex.Message}");
             _lastState = ex.State;
-            status = WorkerStatus.Reachable(ex.State);
+            status = WorkerStatus.Reachable(ex.State) with { Automatic = automatic };
         }
         catch (Exception ex) when (ex is HidppException or HidppProtocolException)
         {
-            status = Rejected(ex);
+            status = Rejected(ex) with { Automatic = automatic };
         }
         catch (Exception ex)
         {
-            status = Unreachable(ex);
+            status = Unreachable(ex) with { Automatic = automatic };
         }
 
         _status = status;
