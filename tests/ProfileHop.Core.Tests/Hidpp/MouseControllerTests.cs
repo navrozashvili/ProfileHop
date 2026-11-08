@@ -678,6 +678,30 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
+    public void GetProfileDirectory_returns_every_entry_including_disabled()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        IReadOnlyList<ProfileDirectoryEntry> dir = Controller.GetProfileDirectory();
+
+        Assert.Equal([new(1, 1, true), new(2, 2, true), new(3, 3, false)], dir);
+        Assert.All(_mouse.Calls, c => Assert.True(c.Function is 0 or 2 or 5, $"function {c.Function}"));
+    }
+
+    [Fact]
+    public void GetCurrentDpiIndexReply_returns_all_reply_parameter_bytes()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.DpiIndex = 4;
+
+        byte[] reply = Controller.GetCurrentDpiIndexReply();
+
+        Assert.Equal(16, reply.Length);
+        Assert.Equal(4, reply[0]);
+        Assert.All(_mouse.Calls, c => Assert.True(c.Function is 0 or 2 or 11, $"function {c.Function}"));
+    }
+
+    [Fact]
     public void Real_feature_table_from_probe_fixture_finds_onboard_profiles_at_0x0E()
     {
         _mouse.Features.Clear();

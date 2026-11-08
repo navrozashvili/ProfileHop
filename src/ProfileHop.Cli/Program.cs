@@ -16,6 +16,8 @@ internal static class Program
                 return StatusCommand.Run(new WindowsHidDeviceSource(), args);
             case "set-profile":
                 return SetProfileCommand.Run(new WindowsHidDeviceSource(), args);
+            case "profiles":
+                return ProfilesCommand.Run(new WindowsHidDeviceSource(), args);
         }
 
         Console.WriteLine("profilehop-cli <command>");
@@ -24,6 +26,9 @@ internal static class Program
         Console.WriteLine("  status [--force-onboard] [--raw]");
         Console.WriteLine("                     Show onboard mode, profiles, current profile, DPI slot;");
         Console.WriteLine("                     --raw also hex-dumps the profile directory (sector 0x0000, read-only)");
+        Console.WriteLine("  profiles [--raw]   Read-only diagnostics: profile format, directory, and each profile");
+        Console.WriteLine("                     sector's report rate, DPI indexes, DPI list and CRC; raw");
+        Console.WriteLine("                     getCurrentDpiIndex reply. --raw hex-dumps every sector");
         Console.WriteLine("  set-profile <n> [--force-onboard]");
         Console.WriteLine("                     Activate onboard profile n");
         Console.WriteLine();

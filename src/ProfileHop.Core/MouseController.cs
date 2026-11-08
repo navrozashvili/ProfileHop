@@ -188,6 +188,13 @@ public sealed class MouseController : IProfileSwitcher
         return data;
     });
 
+    /// <summary>Every profile directory entry (enabled or not), via memoryRead of sector 0x0000. For <c>profiles</c>.</summary>
+    public IReadOnlyList<ProfileDirectoryEntry> GetProfileDirectory() =>
+        Execute(c => ProfileDirectory.Read(c.Onboard, c.Description));
+
+    /// <summary>getCurrentDpiIndex reply parameter bytes, unparsed. For <c>profiles</c>.</summary>
+    public byte[] GetCurrentDpiIndexReply() => Execute(c => c.Onboard.GetCurrentDpiIndexReply());
+
     public ProfileState SetProfile(int profile)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(profile, 1);
