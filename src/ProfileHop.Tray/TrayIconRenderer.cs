@@ -11,11 +11,28 @@ internal static class TrayIconRenderer
     private const uint ActiveColor = 0x1F6FEB;   // 0xRRGGBB, BGRA in memory
     private const uint InactiveColor = 0x7A7A7A;
 
-    /// <summary>Creates a new HICON; the caller destroys it with DestroyIcon.</summary>
-    public static unsafe HICON Create(string glyph, bool active)
+    /// <summary>
+    /// Small-icon size (SM_CXSMICON) at the DPI of <paramref name="hwnd"/>'s monitor. The process is per-monitor aware,
+    /// so plain GetSystemMetrics would report the size for the DPI at startup only.
+    /// </summary>
+    public static int IconSize(HWND hwnd)
     {
-        var size = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSMICON);
-        if (size <= 0) size = 16;
+        int size;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 14393))
+        {
+            var dpi = PInvoke.GetDpiForWindow(hwnd);
+            size = PInvoke.GetSystemMetricsForDpi(SYSTEM_METRICS_INDEX.SM_CXSMICON, dpi == 0 ? 96 : dpi);
+        }
+        else
+        {
+            size = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSMICON);
+        }
+        return size > 0 ? size : 16;
+    }
+
+    /// <summary>Creates a new <paramref name="size"/>-pixel HICON; the caller destroys it with DestroyIcon.</summary>
+    public static unsafe HICON Create(string glyph, bool active, int size)
+    {
 
         var bmi = new BITMAPINFO();
         bmi.bmiHeader.biSize = (uint)sizeof(BITMAPINFOHEADER);
