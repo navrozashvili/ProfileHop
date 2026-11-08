@@ -6,8 +6,16 @@
     <PublishAot>true</PublishAot>
     <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProfileHop.Core\ProfileHop.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Tray has its own CsWin32 list (NativeMethods.txt here); generated types are internal to this assembly. -->
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.369">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
   </ItemGroup>
 </Project>
