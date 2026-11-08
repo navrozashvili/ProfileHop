@@ -35,6 +35,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private static TrayApp? s_app;
 
     private readonly string _configPath;
+    private readonly ConfigSaveGuard _saveGuard; // keeps automatic saves off a broken or hand-edited config.json
     private readonly RollingLog _log;
     private readonly ProfileWorker _worker;
     private readonly Autostart _autostart;
@@ -65,6 +66,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         _acceptPostedCommands = acceptPostedCommands;
         _configPath = configPath;
+        _saveGuard = new ConfigSaveGuard(configPath);
+        _saveGuard.Loaded(loaded);
         _config = loaded.Config;
         _log = log;
         _worker = worker;
@@ -79,6 +82,12 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         RegisterDeviceNotifications();
 
         var problems = new List<string>(loaded.Errors);
+        if (loaded.Broken)
+        {
+            const string BrokenNote = "Using defaults. Learned profiles are not saved until config.json is fixed and reloaded.";
+            _log.Write(LogLevel.Warning, BrokenNote);
+            problems.Add(BrokenNote);
+        }
         problems.AddRange(RegisterHotkeys());
         if (problems.Count > 0) ShowBalloon("ProfileHop", string.Join("\n", problems), warning: true);
 
@@ -301,7 +310,26 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             _log.Write(LogLevel.Info, $"Default profile set to {profile} (the mouse's profile at first read).");
             changed = true;
         }
-        if (changed) SaveConfig("Per-app profile remembered", quiet: status.Automatic);
+        if (changed) SaveConfigAutomatically("Per-app profile remembered", quiet: status.Automatic);
+    }
+
+    /// <summary>
+    /// An automatic save (learning, default capture): skipped, keeping the change in memory only, when config.json was
+    /// broken at load or has changed on disk since it was last loaded or saved, so it never overwrites the user's file.
+    /// </summary>
+    private void SaveConfigAutomatically(string what, bool quiet)
+    {
+        switch (_saveGuard.CheckAutoSave())
+        {
+            case AutoSaveVerdict.Broken:
+                _log.Write(LogLevel.Warning, $"{what}; not saved: config.json could not be loaded (fix it, then use Reload config).");
+                return;
+            case AutoSaveVerdict.ChangedOnDisk:
+                _log.Write(LogLevel.Warning, $"{what}; not saved: config.json changed on disk since it was loaded (use Reload config).");
+                ShowBalloon("ProfileHop", "config.json changed on disk; use Reload config — not saved", warning: true);
+                return;
+        }
+        SaveConfig(what, quiet);
     }
 
     private void SetDefaultProfile(int profile)
@@ -325,12 +353,16 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         ApplyAppProfile(_currentApp); // turned on: catch up with the app in front (no-op when turned off)
     }
 
-    /// <summary>Saves <see cref="_config"/>; on failure logs and, unless <paramref name="quiet"/>, shows a balloon.</summary>
+    /// <summary>
+    /// Saves <see cref="_config"/> (explicit user saves call this directly and overwrite the file as it is); on failure
+    /// logs and, unless <paramref name="quiet"/>, shows a balloon.
+    /// </summary>
     private void SaveConfig(string what, bool quiet = false)
     {
         try
         {
             ConfigStore.Save(_configPath, _config);
+            _saveGuard.Saved();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -401,15 +433,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
         _plan = plan;
         _config.Hotkeys = bindings;
-        try
-        {
-            ConfigStore.Save(_configPath, _config);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
-            ShowBalloon("ProfileHop", $"Hotkeys are active but could not be saved: {ex.Message}", warning: true);
-        }
+        SaveConfig("Hotkeys are active");
         _log.Write(LogLevel.Info, $"Hotkeys saved: {string.Join(", ", plan.Entries.Select(e => $"{e.Text}={e.Action}"))}.");
         return null;
     }
@@ -680,15 +704,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         if (!string.Equals(key, _config.Device, StringComparison.OrdinalIgnoreCase))
         {
             _config.Device = key;
-            try
-            {
-                ConfigStore.Save(_configPath, _config);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
-                ShowBalloon("ProfileHop", $"Device changed but could not be saved: {ex.Message}", warning: true);
-            }
+            SaveConfig("Device changed");
         }
         // Always, even when the entry was already checked: drops the connection; the worker reconnects and refreshes.
         _worker.Reconfigure(key, _config.ForceOnboardMode);
@@ -748,6 +764,16 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         if (HotkeyDialog.Current is not null) return; // the dialog owns the hotkeys right now
         var loaded = ConfigStore.Load(_configPath);
+        if (loaded.Broken)
+        {
+            // Keep running on the current settings; change nothing (automatic saves stay off the file: it now differs
+            // from what was last loaded or saved).
+            var errors = string.Join("\n", loaded.Errors);
+            _log.Write(LogLevel.Warning, $"Config not reloaded, current settings kept: {errors}");
+            ShowBalloon("ProfileHop", $"Config not reloaded; current settings kept.\n{errors}", warning: true);
+            return;
+        }
+        _saveGuard.Loaded(loaded);
         var (oldDevice, oldForce) = (_config.Device, _config.ForceOnboardMode);
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;

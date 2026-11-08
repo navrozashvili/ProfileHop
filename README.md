@@ -43,7 +43,9 @@ silent. The taskbar, Alt-Tab, Start and ProfileHop's own menu don't count as an 
 
 ## Config and logs
 
-`%APPDATA%\ProfileHop\config.json` (reload from the tray menu) and `%APPDATA%\ProfileHop\logs`. Notable keys:
+`%APPDATA%\ProfileHop\config.json` (reload from the tray menu) and `%APPDATA%\ProfileHop\logs`. After editing the
+file by hand, use **Reload config**: until then learned profiles are not saved, so your edit is never overwritten.
+Notable keys:
 
 - `cycle`: e.g. `[1, 5]` to limit next/previous to those profiles
 - `forceOnboardMode`: `true` switches the mouse back to onboard mode if G HUB left it in host mode

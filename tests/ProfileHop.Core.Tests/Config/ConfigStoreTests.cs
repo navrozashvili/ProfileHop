@@ -160,6 +160,52 @@ public class ConfigStoreTests
         Assert.Contains("config.json", error);
         Assert.Equal(new AppConfig().Hotkeys, r.Config.Hotkeys);
         Assert.Equal("{ not json", File.ReadAllText(path)); // user's file is left alone
+        Assert.True(r.Broken);
+    }
+
+    [Fact]
+    public void Unreadable_file_is_broken()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        File.WriteAllText(path, "{}");
+
+        ConfigLoadResult r;
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            r = ConfigStore.Load(path);
+
+        Assert.True(r.Broken);
+        Assert.Single(r.Errors);
+    }
+
+    [Fact]
+    public void Valid_missing_or_unwritable_file_is_not_broken()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        Assert.False(ConfigStore.Load(path).Broken); // missing: defaults written
+        Assert.False(ConfigStore.Load(path).Broken); // valid
+        Assert.False(LoadJson("""{"defaultProfile":0}""").Broken); // normalisation errors only
+
+        var blocker = dir.File("blocker");
+        File.WriteAllText(blocker, "a file, not a folder");
+        Assert.False(ConfigStore.Load(Path.Combine(blocker, "config.json")).Broken); // no file to protect
+    }
+
+    [Fact]
+    public void Load_records_the_files_last_write_time()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+
+        var created = ConfigStore.Load(path);
+        Assert.Equal(File.GetLastWriteTimeUtc(path), created.LastWriteUtc);
+
+        var stamp = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, stamp);
+        Assert.Equal(stamp, ConfigStore.Load(path).LastWriteUtc);
+        Assert.Equal(stamp, ConfigStore.LastWriteUtc(path));
+        Assert.Null(ConfigStore.LastWriteUtc(dir.File("missing.json")));
     }
 
     [Fact]
