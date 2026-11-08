@@ -223,7 +223,10 @@ public sealed class OnboardProfilesFeature(HidppDevice device)
         return r[..16];
     }
 
-    public byte GetCurrentDpiIndex() => device.Call(Index, FnGetCurrentDpiIndex, [])[0];
+    public byte GetCurrentDpiIndex() => GetCurrentDpiIndexReply()[0];
+
+    /// <summary>All reply parameter bytes of getCurrentDpiIndex (diagnostics).</summary>
+    public byte[] GetCurrentDpiIndexReply() => device.Call(Index, FnGetCurrentDpiIndex, []);
 
     public void SetCurrentDpiIndex(byte index) => device.Call(Index, FnSetCurrentDpiIndex, [index]);
 }

@@ -103,6 +103,18 @@ hidpp20.py:1556). `HIDPP20_DPI_COUNT 5` hidpp20.h:622. A slot whose DPI is 0 is 
 the next slot in 0..4 whose DPI is non-zero, wrapping. If no slot is non-zero it wraps over all 5 slots.
 The profile's sector is taken to equal its profile number (Solaar convention, above).
 
+## Profile sector header (`profiles` diagnostic)
+
+| Item | Source | Decision |
+| --- | --- | --- |
+| Profile format ids | libratbag `HIDPP20_ONBOARD_PROFILES_PROFILE_TYPE_` G402 1, G303 2, G900 3, G915 4, G502X 5 hidpp20.c:1802-1806, accepted set hidpp20.c:2224-2228; Solaar returns nothing unless `memory == 0x01` and `profile <= 0x05` hidpp20.py:1666 | formats 1–5 decoded, anything else printed raw only |
+| Layout | one `union hidpp20_internal_profile` for all five formats hidpp20.c:1816-1842: byte 0 report rate, 1 default DPI index, 2 switched DPI index, 3..12 `uint16_t dpi[5]`; parsed hidpp20.c:2746-2755. Solaar `OnboardProfile.from_bytes` same offsets hidpp20.py:1550-1556 | `ProfileSector.Decode` |
+| Report rate | libratbag `1000 / max(1, report_rate)` hidpp20.c:2746 (byte is ms); Solaar prints "{report_rate} ms" hidpp20.py:1602 | Hz = 1000 / max(1, byte) |
+| CRC | last 2 bytes, BE, CRC-CCITT seed 0xFFFF over the rest hidpp20.c:1921-1934, hidpp-generic.c:382-404; an invalid directory CRC makes libratbag use ROM profiles 0x0101.. instead hidpp20.c:2841-2868 | printed per sector, not enforced |
+| ROM profiles | `HIDPP20_ROM_PROFILES_G402 0x0100`, profile i at `0x0100 + i` hidpp20.c:1811, 2866-2868 | `profiles` also reads sectors 0x0101..0x0100+ROM count (memoryRead only) |
+
+Solaar's `OnboardProfilesVersion = 3` (hidpp20.py:1618) is the version of its YAML dump, not a device format id.
+
 ## Device name and type (0x0005) — added for choosing the mouse among several receivers
 
 Not in the plan; added because the user's PC has two LIGHTSPEED receivers and keyboards can also have 0x8100.
