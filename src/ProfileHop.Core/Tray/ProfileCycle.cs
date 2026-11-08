@@ -18,6 +18,20 @@ public static class ProfileCycle
         return list[0];
     }
 
+    /// <summary>Mirror of <see cref="Next"/>: wraps from the first to the last; a current profile not in the list goes
+    /// to the last. No candidates → stays on current.</summary>
+    public static int Previous(int current, IReadOnlyList<int> enabled, IReadOnlyList<int>? cycleOverride,
+        IReadOnlyList<int>? configured = null)
+    {
+        var list = Candidates(enabled, cycleOverride, configured).List;
+        if (list.Count == 0) return current;
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (list[i] == current) return list[(i + list.Count - 1) % list.Count];
+        }
+        return list[^1];
+    }
+
     /// <summary>
     /// Profiles "next" cycles through: <paramref name="cycleOverride"/> if non-empty; else the device's enabled profiles
     /// if there are at least two; else the <paramref name="configured"/> profile numbers (config <c>profiles</c>,

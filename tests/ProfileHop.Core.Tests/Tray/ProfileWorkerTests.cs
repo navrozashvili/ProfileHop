@@ -247,6 +247,140 @@ public class ProfileWorkerTests
         Assert.Single(log.Lines, l => l.Message.Contains("configured profiles", StringComparison.Ordinal));
     }
 
+    private static (ProfileWorker worker, FakeSwitcher mouse) Known(int current)
+    {
+        var (worker, mouse, _) = Create();
+        mouse.Current = current;
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+        return (worker, mouse);
+    }
+
+    [Fact]
+    public void Previous_goes_back_from_known_state_and_wraps()
+    {
+        var (worker, mouse) = Known(1);
+
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Rapid_previous_presses_accumulate()
+    {
+        var (worker, mouse) = Known(3);
+
+        worker.RequestPreviousProfile(); // 3 -> 2
+        worker.RequestPreviousProfile(); // 2 -> 1
+        worker.RequestPreviousProfile(); // 1 -> 3 (wrap)
+        worker.RequestPreviousProfile(); // 3 -> 2
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Next_next_previous_nets_one_step_forward()
+    {
+        var (worker, mouse) = Known(1);
+
+        worker.RequestNextProfile();
+        worker.RequestNextProfile();
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Previous_cancels_next_when_net_steps_are_zero()
+    {
+        var (worker, mouse) = Known(2);
+
+        worker.RequestNextProfile();
+        worker.RequestPreviousProfile();
+
+        Assert.False(worker.ProcessPending());
+        Assert.Empty(mouse.Calls);
+    }
+
+    [Fact]
+    public void Previous_after_absolute_goes_back_from_it()
+    {
+        var (worker, mouse) = Known(2);
+
+        worker.RequestProfile(1);
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Absolute_request_cancels_unresolved_previous()
+    {
+        var (worker, mouse, _) = Create();
+        worker.RequestPreviousProfile();
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+        Assert.Equal(["set 2"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Absolute_target_with_net_zero_steps_still_switches_to_it()
+    {
+        var (worker, mouse) = Known(1);
+
+        worker.RequestProfile(3);
+        worker.RequestNextProfile();
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Previous_with_unknown_state_reads_state_first()
+    {
+        var (worker, mouse, _) = Create();
+        mouse.Current = 2;
+
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["get", "set 1"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Previous_uses_cycle_override()
+    {
+        var (worker, mouse) = Known(1);
+        worker.CycleOverride = [1, 3];
+
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Previous_with_one_enabled_profile_cycles_configured_profiles()
+    {
+        var mouse = new FakeSwitcher { Enabled = [1] };
+        var worker = new ProfileWorker(mouse) { ConfiguredProfiles = [1, 2, 4] };
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+
+        worker.RequestPreviousProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 4"], mouse.Calls);
+    }
+
     [Fact]
     public void Status_reports_confirmed_profile_not_requested_one()
     {

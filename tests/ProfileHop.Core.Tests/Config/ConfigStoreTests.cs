@@ -14,6 +14,7 @@ public class ConfigStoreTests
         Assert.Equal(
             [
                 new HotkeyBinding("Ctrl+Alt+F9", "next-profile"),
+                new HotkeyBinding("Ctrl+Alt+F8", "previous-profile"),
                 new HotkeyBinding("Ctrl+Alt+1", "profile 1"),
                 new HotkeyBinding("Ctrl+Alt+2", "profile 2"),
                 new HotkeyBinding("Ctrl+Alt+3", "profile 3"),
@@ -49,8 +50,9 @@ public class ConfigStoreTests
         var c = ConfigStore.Load(path).Config;
 
         Assert.Equal([new ProfileName(1, "Normal"), new ProfileName(2, "Game")], c.Profiles);
-        Assert.Equal(4, c.Hotkeys.Count);
+        Assert.Equal(4, c.Hotkeys.Count); // no previous-profile binding is added to a saved config
         Assert.Equal(new HotkeyBinding("Ctrl+Alt+F12", "next-dpi-slot"), c.Hotkeys[3]);
+        Assert.DoesNotContain(c.Hotkeys, h => h.Action == "previous-profile");
     }
 
     [Fact]

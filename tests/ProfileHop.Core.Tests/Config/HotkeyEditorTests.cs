@@ -25,12 +25,13 @@ public class HotkeyEditorTests
     {
         var rows = HotkeyEditor.Rows(new AppConfig(), state: null);
 
-        Assert.Equal(["Next profile", "Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5", "Next DPI slot"],
+        Assert.Equal(["Next profile", "Previous profile", "Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5", "Next DPI slot"],
             rows.Select(r => r.Label));
-        Assert.Equal([H("Ctrl+Alt+F9"), H("Ctrl+Alt+1"), H("Ctrl+Alt+2"), H("Ctrl+Alt+3"), H("Ctrl+Alt+4"), H("Ctrl+Alt+5"), null],
+        Assert.Equal([H("Ctrl+Alt+F9"), H("Ctrl+Alt+F8"), H("Ctrl+Alt+1"), H("Ctrl+Alt+2"), H("Ctrl+Alt+3"), H("Ctrl+Alt+4"), H("Ctrl+Alt+5"), null],
             rows.Select(r => r.Hotkey));
         Assert.All(rows, r => Assert.True(r.OnMouse));
-        Assert.Equal(new HotkeyAction(HotkeyActionKind.Profile, 2), rows[2].Action);
+        Assert.Equal(new HotkeyAction(HotkeyActionKind.PreviousProfile, 0), rows[1].Action);
+        Assert.Equal(new HotkeyAction(HotkeyActionKind.Profile, 2), rows[3].Action);
     }
 
     [Fact]
@@ -40,8 +41,8 @@ public class HotkeyEditorTests
 
         var rows = HotkeyEditor.Rows(config, state: null);
 
-        Assert.Equal(["Next profile", "Profile 2", "Profile 4", "Next DPI slot"], rows.Select(r => r.Label));
-        Assert.Equal([null, null, H("Ctrl+Alt+F5"), null], rows.Select(r => r.Hotkey));
+        Assert.Equal(["Next profile", "Previous profile", "Profile 2", "Profile 4", "Next DPI slot"], rows.Select(r => r.Label));
+        Assert.Equal([null, null, null, H("Ctrl+Alt+F5"), null], rows.Select(r => r.Hotkey));
     }
 
     [Fact]
@@ -49,7 +50,7 @@ public class HotkeyEditorTests
     {
         var rows = HotkeyEditor.Rows(new AppConfig { Hotkeys = [] }, state: null);
 
-        Assert.Equal(7, rows.Count);
+        Assert.Equal(8, rows.Count);
         Assert.All(rows, r => Assert.Null(r.Hotkey));
     }
 
@@ -58,7 +59,7 @@ public class HotkeyEditorTests
     {
         var rows = HotkeyEditor.Rows(new AppConfig(), Mouse([1, 2, 3, 4, 5], RealNames));
 
-        Assert.Equal(["Next profile", "Profile 1 — 400", "Profile 2 — 600", "Profile 3 — 800", "Profile 4 — 1600", "Profile 5 — 3200", "Next DPI slot"],
+        Assert.Equal(["Next profile", "Previous profile", "Profile 1 — 400", "Profile 2 — 600", "Profile 3 — 800", "Profile 4 — 1600", "Profile 5 — 3200", "Next DPI slot"],
             rows.Select(r => r.Label));
     }
 
@@ -84,7 +85,7 @@ public class HotkeyEditorTests
         Assert.False(seven.OnMouse);
         Assert.Equal("Profile 7 (not on mouse)", seven.Label);
         Assert.Equal(H("Ctrl+Alt+7"), seven.Hotkey);
-        Assert.Equal(["Next profile", "Profile 1 — 400", "Profile 2 — 600", "Profile 7 (not on mouse)", "Next DPI slot"], rows.Select(r => r.Label));
+        Assert.Equal(["Next profile", "Previous profile", "Profile 1 — 400", "Profile 2 — 600", "Profile 7 (not on mouse)", "Next DPI slot"], rows.Select(r => r.Label));
     }
 
     [Fact]
@@ -94,9 +95,10 @@ public class HotkeyEditorTests
 
         var rows = HotkeyEditor.Rows(config, Mouse([1, 2, 3, 4, 5], RealNames));
 
-        Assert.Equal(["Next profile", "Profile 1 — Normal", "Profile 2 — Game", "Profile 3 — 800", "Profile 4 — 1600", "Profile 5 — 3200", "Next DPI slot"],
+        Assert.Equal(["Next profile", "Previous profile", "Profile 1 — Normal", "Profile 2 — Game", "Profile 3 — 800", "Profile 4 — 1600", "Profile 5 — 3200", "Next DPI slot"],
             rows.Select(r => r.Label));
-        Assert.Equal([H("Ctrl+Alt+F9"), H("Ctrl+Alt+F10"), H("Ctrl+Alt+F11"), null, null, null, H("Ctrl+Alt+F12")], rows.Select(r => r.Hotkey));
+        // Saved config without previous-profile: its row is empty, nothing is bound automatically.
+        Assert.Equal([H("Ctrl+Alt+F9"), null, H("Ctrl+Alt+F10"), H("Ctrl+Alt+F11"), null, null, null, H("Ctrl+Alt+F12")], rows.Select(r => r.Hotkey));
     }
 
     [Fact]
@@ -104,9 +106,9 @@ public class HotkeyEditorTests
     {
         var rows = HotkeyEditor.Rows(new AppConfig(), Mouse([1], RealNames));
 
-        Assert.Equal(7, rows.Count);
+        Assert.Equal(8, rows.Count);
         Assert.All(rows, r => Assert.True(r.OnMouse));
-        Assert.Equal("Profile 5 — 3200", rows[5].Label);
+        Assert.Equal("Profile 5 — 3200", rows[6].Label);
     }
 
     [Fact]
@@ -119,12 +121,13 @@ public class HotkeyEditorTests
         var defaults = HotkeyEditor.DefaultRows(config, state);
 
         Assert.Equal(rows.Select(r => (r.Action, r.Label, r.OnMouse)), defaults.Select(r => (r.Action, r.Label, r.OnMouse)));
-        Assert.Equal([H("Ctrl+Alt+F9"), H("Ctrl+Alt+1"), H("Ctrl+Alt+2"), H("Ctrl+Alt+3"), H("Ctrl+Alt+4"), H("Ctrl+Alt+5"), null, null],
+        Assert.Equal([H("Ctrl+Alt+F9"), H("Ctrl+Alt+F8"), H("Ctrl+Alt+1"), H("Ctrl+Alt+2"), H("Ctrl+Alt+3"), H("Ctrl+Alt+4"), H("Ctrl+Alt+5"), null, null],
             defaults.Select(r => r.Hotkey)); // profile 12 (not on mouse) has no default; DPI slot is off by default
     }
 
     [Theory]
     [InlineData("next-profile", "Ctrl+Alt+F9")]
+    [InlineData("previous-profile", "Ctrl+Alt+F8")]
     [InlineData("profile 1", "Ctrl+Alt+1")]
     [InlineData("profile 9", "Ctrl+Alt+9")]
     [InlineData("profile 10", null)]
@@ -139,12 +142,13 @@ public class HotkeyEditorTests
     public void Save_turns_rows_into_bindings_keeping_cleared_rows_as_empty_keys()
     {
         var rows = HotkeyEditor.Rows(new AppConfig { Hotkeys = OldDefaults() }, state: null);
-        var edited = rows.Select((r, i) => i == 3 ? r with { Hotkey = null } : r).ToList();
+        var edited = rows.Select((r, i) => i == 4 ? r with { Hotkey = null } : r).ToList();
 
         Assert.True(HotkeyEditor.TryBuildBindings(edited, out var bindings, out var error), error);
         Assert.Equal(
             [
                 new HotkeyBinding("Ctrl+Alt+F9", "next-profile"),
+                new HotkeyBinding("", "previous-profile"),
                 new HotkeyBinding("Ctrl+Alt+F10", "profile 1"),
                 new HotkeyBinding("Ctrl+Alt+F11", "profile 2"),
                 new HotkeyBinding("", "next-dpi-slot"),
@@ -157,12 +161,32 @@ public class HotkeyEditorTests
     public void Save_rejects_duplicates_naming_the_combo_and_both_rows()
     {
         var rows = HotkeyEditor.Rows(new AppConfig(), Mouse([1, 2, 3, 4, 5], RealNames));
-        var edited = rows.Select((r, i) => i == 1 ? r with { Hotkey = H("Ctrl+Alt+F9") } : r).ToList();
+        var edited = rows.Select((r, i) => i == 2 ? r with { Hotkey = H("Ctrl+Alt+F9") } : r).ToList();
 
         Assert.False(HotkeyEditor.TryBuildBindings(edited, out _, out var error));
         Assert.Contains("Ctrl+Alt+F9", error);
         Assert.Contains("Next profile", error);
         Assert.Contains("Profile 1 — 400", error);
+    }
+
+    [Fact]
+    public void Previous_profile_row_sits_directly_under_next_profile()
+    {
+        var rows = HotkeyEditor.Rows(new AppConfig(), Mouse([1, 2, 3], RealNames));
+
+        Assert.Equal(new HotkeyAction(HotkeyActionKind.NextProfile, 0), rows[0].Action);
+        Assert.Equal(new HotkeyAction(HotkeyActionKind.PreviousProfile, 0), rows[1].Action);
+        Assert.Equal("Previous profile", rows[1].Label);
+        Assert.True(rows[1].OnMouse);
+    }
+
+    [Fact]
+    public void Reset_to_defaults_binds_previous_profile_even_when_the_saved_config_lacks_it()
+    {
+        var config = new AppConfig { Hotkeys = OldDefaults() };
+
+        Assert.Null(HotkeyEditor.Rows(config, state: null)[1].Hotkey);
+        Assert.Equal(H("Ctrl+Alt+F8"), HotkeyEditor.DefaultRows(config, state: null)[1].Hotkey);
     }
 
     [Fact]
