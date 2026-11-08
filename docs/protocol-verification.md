@@ -99,9 +99,36 @@ Profile sector bytes 3..12 are five little-endian u16 DPI values (`uint16_t dpi[
 `get_unaligned_le_u16(&data[2 * i + 3])` hidpp20.c:2754; Solaar `unpack("<H", bytes[i*2+3 : i*2+5])` for i in 0..4
 hidpp20.py:1556). `HIDPP20_DPI_COUNT 5` hidpp20.h:622. A slot whose DPI is 0 is disabled (driver-hidpp20.c:1221-1226).
 
-`NextDpiSlot` therefore reads the first 16 bytes of the current profile's sector (memoryRead, read-only) and moves to
-the next slot in 0..4 whose DPI is non-zero, wrapping. If no slot is non-zero it wraps over all 5 slots.
-The profile's sector is taken to equal its profile number (Solaar convention, above).
+`NextDpiSlot` picks the DPI layout by the profile format from getProfilesDescription (`ProfileSector.DpiSlots`):
+the libratbag layout above for formats 1–5, the inferred layout below for 0x08. It reads only the 16-byte memoryRead
+chunks covering the DPI list of the current profile's sector (one chunk for 1–5, two for 0x08; read-only) and moves
+from getCurrentDpiIndex to the next slot in 0..4 whose DPI is non-zero, wrapping. If only the current slot is enabled
+it returns it and sends **no** setCurrentDpiIndex. If no slot is non-zero, the sector is unreadable, or the format's
+layout is unknown, it wraps over all 5 slots. The profile's sector is taken to equal its profile number (Solaar
+convention, above).
+
+## Profile format 0x08 (PRO X2 SUPERSTRIKE, inferred)
+
+The PRO X2 SUPERSTRIKE reports memory model 0x01, **profile format 0x08**, sector size 255, 5 profiles + 1 ROM
+profile. Neither libratbag (accepts 1–5) nor Solaar (rejects > 0x05) knows format 0x08, and reading it with the
+libratbag layout gives wrong DPI slots (e.g. profile 4's disabled fifth entry looks enabled). The layout below is
+**inferred from device dumps, not from libratbag/Solaar**: real sectors of profiles 1–5 and ROM 0x0101 captured
+2026-11-08 with `profiles --raw` (first 0x30 bytes + names in `tests/fixtures/profiles-superstrike-format08-2026-11-08.txt`).
+Every sector's stored CRC (CRC-CCITT seed 0xFFFF, last 2 bytes BE, as libratbag) was valid.
+
+| Bytes | Meaning (inferred) | Evidence |
+| --- | --- | --- |
+| 0 | report-rate code, mapping unknown — shown raw, not interpreted | 05 (P1–2), 04 (P3–5), 03 (ROM) |
+| 1 | unknown | 0x03 in every sector |
+| 2 | default DPI index, 0-based | getCurrentDpiIndex byte 0 was 0 on P1 and 4 on P5 = byte 2 of the active profile |
+| 3 | switched / shift DPI index, 0-based | equal to byte 2 in every user profile (ROM: 00 00) |
+| 4..28 | five DPI entries of 5 bytes: `[X LE16, Y LE16, flag]`; X = 0 → entry disabled | P1 entry 0 = 400 (`90 01 90 01 02`), entries 1–4 all 00; P4 entries 0–3 = 1600, entry 4 = 0; ROM 800/1200/1600/2400/3200; names match entry 0's DPI |
+| 0x26..0x2B | two 3-byte groups, probably per-button (left/right) HITS settings — shown raw, not interpreted | `08 09 0C 08 09 0C` on P1–4, `20 09 0C 20 09 0C` on P5, `14 08 0C …` on ROM; the user confirmed P1 and P5 differ in HITS click feel |
+| 0xA0.. | profile name, UTF-16LE, NUL-terminated | "400", "600", "800", "1600", "3200" |
+| last 2 | CRC-CCITT, BE | valid on every sector |
+
+Used by `NextDpiSlot` (enabled = X ≠ 0) and by the `profiles` command, which labels the decode "INFERRED LAYOUT".
+Nothing is ever written. Unverified: the flag byte, bytes 0–1, and whether byte 3 really is the DPI-shift slot.
 
 ## Profile sector header (`profiles` diagnostic)
 

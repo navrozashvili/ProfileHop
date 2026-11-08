@@ -218,9 +218,7 @@ public sealed class MouseController : IProfileSwitcher
         bool[]? enabled = null;
         try
         {
-            int profile = c.Onboard.GetCurrentProfile();
-            if (profile is >= 1 and <= 0xFFFF)
-                enabled = EnabledDpiSlots(c.Onboard.MemoryRead((ushort)profile, 0));
+            enabled = EnabledDpiSlots(c);
         }
         catch (HidppException)
         {
@@ -228,7 +226,8 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         byte next = NextSlot(current, enabled);
-        c.Onboard.SetCurrentDpiIndex(next);
+        if (next != current) // a single enabled slot: nothing to switch to
+            c.Onboard.SetCurrentDpiIndex(next);
         return (int)next;
     });
 
@@ -246,13 +245,24 @@ public sealed class MouseController : IProfileSwitcher
         }
     }
 
-    /// <summary>Profile sector bytes 3..12: five LE16 DPI values; 0 = disabled slot (libratbag).</summary>
-    internal static bool[] EnabledDpiSlots(byte[] profileHead)
+    /// <summary>
+    /// Enabled DPI slots (DPI != 0) of the current profile, decoded per the profile format from getProfilesDescription
+    /// (<see cref="ProfileSector.DpiSlots"/>: libratbag layout for 1..5, inferred layout for 0x08). Reads only the
+    /// 16-byte memoryRead chunks covering the DPI list. Null when the format's layout is unknown.
+    /// </summary>
+    private static bool[]? EnabledDpiSlots(Connection c)
     {
-        var enabled = new bool[OnboardProfilesFeature.DpiSlotCount];
-        for (int i = 0; i < enabled.Length; i++)
-            enabled[i] = (profileHead[3 + 2 * i] | (profileHead[4 + 2 * i] << 8)) != 0;
-        return enabled;
+        byte format = c.Description.ProfileFormat;
+        int need = ProfileSector.DpiHeadLength(format);
+        int profile = c.Onboard.GetCurrentProfile();
+        if (need == 0 || profile is < 1 or > 0xFFFF)
+            return null;
+
+        const int chunk = 16;
+        var head = new byte[(need + chunk - 1) / chunk * chunk];
+        for (int offset = 0; offset < head.Length; offset += chunk)
+            c.Onboard.MemoryRead((ushort)profile, (ushort)offset).CopyTo(head, offset);
+        return ProfileSector.DpiSlots(format, head)?.Select(d => d != 0).ToArray();
     }
 
     internal static byte NextSlot(byte current, bool[]? enabled)
