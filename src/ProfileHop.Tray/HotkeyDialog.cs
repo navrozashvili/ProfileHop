@@ -169,7 +169,7 @@ internal sealed unsafe class HotkeyDialog
         y += gap;
         var contentW = labelW + gap + boxW + gap + clearW;
         AddChild("BUTTON", "Reset to defaults", BsPushButton, S(margin), S(y), S(buttonW + 30), S(buttonH), IdReset, tabStop: true);
-        AddChild("BUTTON", "Save", BsDefPushButton, S(margin + contentW - 2 * buttonW - gap), S(y), S(buttonW), S(buttonH), IdSave, tabStop: true);
+        var save = AddChild("BUTTON", "Save", BsDefPushButton, S(margin + contentW - 2 * buttonW - gap), S(y), S(buttonW), S(buttonH), IdSave, tabStop: true);
         AddChild("BUTTON", "Cancel", BsPushButton, S(margin + contentW - buttonW), S(y), S(buttonW), S(buttonH), IdCancel, tabStop: true);
         y += buttonH + margin;
 
@@ -182,7 +182,8 @@ internal sealed unsafe class HotkeyDialog
 
         PInvoke.ShowWindow(Hwnd, SHOW_WINDOW_CMD.SW_SHOW);
         PInvoke.SetForegroundWindow(Hwnd);
-        if (_boxes.Count > 0) PInvoke.SetFocus(_boxes[0]);
+        // Not a capture field: focus there would start capturing and hide its hotkey behind "Press a key…".
+        PInvoke.SetFocus(save);
     }
 
     /// <summary>Work area of the monitor under the cursor (nearest one if the cursor is off-screen).</summary>

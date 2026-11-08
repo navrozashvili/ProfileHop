@@ -160,6 +160,52 @@ public class ConfigStoreTests
         Assert.Contains("config.json", error);
         Assert.Equal(new AppConfig().Hotkeys, r.Config.Hotkeys);
         Assert.Equal("{ not json", File.ReadAllText(path)); // user's file is left alone
+        Assert.True(r.Broken);
+    }
+
+    [Fact]
+    public void Unreadable_file_is_broken()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        File.WriteAllText(path, "{}");
+
+        ConfigLoadResult r;
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            r = ConfigStore.Load(path);
+
+        Assert.True(r.Broken);
+        Assert.Single(r.Errors);
+    }
+
+    [Fact]
+    public void Valid_missing_or_unwritable_file_is_not_broken()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        Assert.False(ConfigStore.Load(path).Broken); // missing: defaults written
+        Assert.False(ConfigStore.Load(path).Broken); // valid
+        Assert.False(LoadJson("""{"defaultProfile":0}""").Broken); // normalisation errors only
+
+        var blocker = dir.File("blocker");
+        File.WriteAllText(blocker, "a file, not a folder");
+        Assert.False(ConfigStore.Load(Path.Combine(blocker, "config.json")).Broken); // no file to protect
+    }
+
+    [Fact]
+    public void Load_records_the_files_last_write_time()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+
+        var created = ConfigStore.Load(path);
+        Assert.Equal(File.GetLastWriteTimeUtc(path), created.LastWriteUtc);
+
+        var stamp = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, stamp);
+        Assert.Equal(stamp, ConfigStore.Load(path).LastWriteUtc);
+        Assert.Equal(stamp, ConfigStore.LastWriteUtc(path));
+        Assert.Null(ConfigStore.LastWriteUtc(dir.File("missing.json")));
     }
 
     [Fact]
@@ -271,6 +317,83 @@ public class ConfigStoreTests
         Assert.True(File.Exists(path));
         Assert.False(File.Exists(path + ".bak"));
         Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    private static ConfigLoadResult LoadJson(string json)
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        File.WriteAllText(path, json);
+        return ConfigStore.Load(path);
+    }
+
+    [Fact]
+    public void NewFieldsRoundTrip()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        var c = new AppConfig { DefaultProfile = 1, AutoSwitch = false, SwitchNotification = false };
+        c.AppProfiles["c:\\games\\a.exe"] = 3;
+
+        ConfigStore.Save(path, c);
+        var r = ConfigStore.Load(path);
+
+        Assert.Empty(r.Errors);
+        Assert.Equal(1, r.Config.DefaultProfile);
+        Assert.Equal(3, Assert.Single(r.Config.AppProfiles).Value);
+        Assert.Equal(3, r.Config.AppProfiles["C:\\Games\\A.exe"]);
+        Assert.False(r.Config.AutoSwitch);
+        Assert.False(r.Config.SwitchNotification);
+    }
+
+    [Fact]
+    public void NewFieldDefaults()
+    {
+        var c = LoadJson("{}").Config;
+
+        Assert.Null(c.DefaultProfile);
+        Assert.Empty(c.AppProfiles);
+        Assert.True(c.AutoSwitch);
+        Assert.True(c.SwitchNotification);
+    }
+
+    [Fact]
+    public void AppProfilesNormalised()
+    {
+        var r = LoadJson("""{"appProfiles":{"C:\\Games\\A.EXE":2,"c:\\games\\b.exe":0,"  ":1}}""");
+
+        var entry = Assert.Single(r.Config.AppProfiles);
+        Assert.Equal("c:\\games\\a.exe", entry.Key);
+        Assert.Equal(2, entry.Value);
+        Assert.Equal(2, r.Errors.Count);
+        Assert.Contains(r.Errors, e => e.Contains("profile 0"));
+        Assert.Contains(r.Errors, e => e.Contains("blank"));
+    }
+
+    [Fact]
+    public void AppProfilesDuplicateAfterLowercase()
+    {
+        var r = LoadJson("""{"appProfiles":{"C:\\A.exe":2,"c:\\a.exe":3}}""");
+
+        Assert.Single(r.Config.AppProfiles);
+    }
+
+    [Fact]
+    public void DefaultProfileBelowOneDropped()
+    {
+        var r = LoadJson("""{"defaultProfile":0}""");
+
+        Assert.Null(r.Config.DefaultProfile);
+        Assert.Single(r.Errors);
+    }
+
+    [Fact]
+    public void NullAppProfilesBecomesEmpty()
+    {
+        var r = LoadJson("""{"appProfiles":null}""");
+
+        Assert.Empty(r.Config.AppProfiles);
+        Assert.Empty(r.Errors);
     }
 
     [Fact]

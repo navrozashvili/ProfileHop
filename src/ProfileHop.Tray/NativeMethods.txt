@@ -89,3 +89,15 @@ LoadCursor
 IDC_ARROW
 CW_USEDEFAULT
 ShellExecute
+// Per-app profiles
+SetWinEventHook
+UnhookWinEvent
+GetForegroundWindow
+GetWindowThreadProcessId
+OpenProcess
+QueryFullProcessImageName
+GetClassName
+EnumChildWindows
+EVENT_SYSTEM_FOREGROUND
+WINEVENT_OUTOFCONTEXT
+WINEVENT_SKIPOWNPROCESS

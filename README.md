@@ -28,13 +28,34 @@ work, handy for QMK keys.
 Profile names come from the mouse (the names G HUB stored). Tray menu → **Device** picks the mouse if you have
 more than one Logitech receiver.
 
+Each profile hotkey shows a Windows notification with the mouse, the profile and its DPI
+(`switchNotification: false` turns it off).
+
+## Per-app profiles
+
+ProfileHop remembers the profile you last chose in each app (by hotkey or from the tray menu) and switches to it the
+moment that app comes to the front. Apps you never switched in get the **Default profile**. Automatic switches are
+silent. The taskbar, Alt-Tab, Start and ProfileHop's own menu don't count as an app.
+
+- Tray menu → **Default profile** picks the profile for every app with nothing remembered. On first start it is set
+  to the mouse's current profile.
+- Tray menu → **Switch per app** turns automatic switching and learning off or on. Hotkeys work either way.
+
 ## Config and logs
 
-`%APPDATA%\ProfileHop\config.json` (reload from the tray menu) and `%APPDATA%\ProfileHop\logs`. Notable keys:
+`%APPDATA%\ProfileHop\config.json` (reload from the tray menu) and `%APPDATA%\ProfileHop\logs`. After editing the
+file by hand, use **Reload config**: until then learned profiles are not saved, so your edit is never overwritten.
+Notable keys:
 
 - `cycle`: e.g. `[1, 5]` to limit next/previous to those profiles
 - `forceOnboardMode`: `true` switches the mouse back to onboard mode if G HUB left it in host mode
 - `logLevel`: `Debug` hex-dumps every HID++ frame
+- `defaultProfile`: profile for apps with nothing remembered (missing = set from the mouse at first start)
+- `appProfiles`: remembered profiles, `{ "c:\\games\\cs2\\cs2.exe": 3 }` (lower-cased full exe path → profile);
+  edit by hand and use Reload config, or delete an entry so that app follows the default again
+- `autoSwitch`: `false` turns per-app switching and learning off (same as the **Switch per app** menu item)
+- `switchNotification`: `false` hides the notification after a profile hotkey; `balloon` now only covers errors and
+  notices
 
 ## CLI
 

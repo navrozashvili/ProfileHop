@@ -52,6 +52,17 @@ public static class TrayText
         return items;
     }
 
+    /// <summary>Windows notification after a switch: title = device name, text = "Name (profile N) · DPI".</summary>
+    public static (string Title, string Text) SwitchNotification(ProfileState state, IReadOnlyList<ProfileName> names)
+    {
+        var p = state.CurrentProfile;
+        var name = ProfileDisplay.NameOf(p, names, state.ProfileNames);
+        var text = name is null ? $"Profile {p}" : $"{name} (profile {p})";
+        if (state.CurrentDpi is { } dpi)
+            text += $" · {dpi.ToString(System.Globalization.CultureInfo.InvariantCulture)} DPI";
+        return (state.DeviceName ?? "ProfileHop", text);
+    }
+
     private static string Escape(string s) => s.Replace("&", "&&", StringComparison.Ordinal);
 
     private static string ProfileTip(ProfileState state, IReadOnlyList<ProfileName> names)

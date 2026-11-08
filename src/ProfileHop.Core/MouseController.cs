@@ -307,11 +307,51 @@ public sealed class MouseController : IProfileSwitcher
         if (need == 0 || profile is < 1 or > 0xFFFF)
             return null;
 
+        return ProfileSector.DpiSlots(format, ReadDpiHead(c, (ushort)profile, need))?.Select(d => d != 0).ToArray();
+    }
+
+    /// <summary>The first <paramref name="need"/> bytes of a profile sector, read as whole 16-byte memoryRead chunks.</summary>
+    private static byte[] ReadDpiHead(Connection c, ushort profile, int need)
+    {
         const int chunk = 16;
         var head = new byte[(need + chunk - 1) / chunk * chunk];
         for (int offset = 0; offset < head.Length; offset += chunk)
-            c.Onboard.MemoryRead((ushort)profile, (ushort)offset).CopyTo(head, offset);
-        return ProfileSector.DpiSlots(format, head)?.Select(d => d != 0).ToArray();
+            c.Onboard.MemoryRead(profile, (ushort)offset).CopyTo(head, offset);
+        return head;
+    }
+
+    /// <summary>
+    /// DPI slots of each profile in <paramref name="profiles"/> (memoryRead only, like the names). A profile whose
+    /// sector can't be read is left out; an unknown format or unreadable description gives an empty result.
+    /// </summary>
+    private static Dictionary<int, IReadOnlyList<ushort>> ReadProfileDpis(Connection c, IEnumerable<int> profiles)
+    {
+        var result = new Dictionary<int, IReadOnlyList<ushort>>();
+        byte format;
+        try
+        {
+            format = c.Description.ProfileFormat;
+        }
+        catch (HidppException)
+        {
+            return result;
+        }
+        int need = ProfileSector.DpiHeadLength(format);
+        if (need == 0)
+            return result;
+        foreach (int profile in profiles)
+        {
+            try
+            {
+                if (ProfileSector.DpiSlots(format, ReadDpiHead(c, (ushort)profile, need)) is { } slots)
+                    result[profile] = slots;
+            }
+            catch (HidppException)
+            {
+                // this profile's sector is unreadable: no DPI for it
+            }
+        }
+        return result;
     }
 
     internal static byte NextSlot(byte current, bool[]? enabled)
@@ -354,7 +394,30 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         c.ProfileNames ??= ReadProfileNames(c, enabled);
-        return new ProfileState(mode, current, enabled, dpi) { ProfileNames = c.ProfileNames };
+        c.ProfileDpis ??= ReadProfileDpis(c, ProfilesToRead(c, enabled));
+        return new ProfileState(mode, current, enabled, dpi)
+        {
+            ProfileNames = c.ProfileNames,
+            ProfileDpis = c.ProfileDpis,
+            DeviceName = c.Info.Name,
+        };
+    }
+
+    /// <summary>Enabled profiles, plus 1..profile count when the directory lists fewer than two.</summary>
+    private static SortedSet<int> ProfilesToRead(Connection c, IReadOnlyList<int> enabled)
+    {
+        var profiles = new SortedSet<int>(enabled);
+        if (enabled.Count < 2)
+            try
+            {
+                for (int p = 1; p <= c.Description.ProfileCount; p++)
+                    profiles.Add(p);
+            }
+            catch (HidppException)
+            {
+                // description unreadable: only the enabled ones
+            }
+        return profiles;
     }
 
     /// <summary>
@@ -379,10 +442,7 @@ public sealed class MouseController : IProfileSwitcher
         if (!knownLayout || d.SectorSize < ProfileSector.NameOffset + ProfileSector.NameLength)
             return names;
 
-        var profiles = new SortedSet<int>(enabled);
-        if (enabled.Count < 2)
-            for (int p = 1; p <= d.ProfileCount; p++)
-                profiles.Add(p);
+        var profiles = ProfilesToRead(c, enabled);
 
         var field = new byte[ProfileSector.NameLength];
         foreach (int profile in profiles)
@@ -797,6 +857,9 @@ public sealed class MouseController : IProfileSwitcher
 
         /// <summary>Profile names read on the first state read of this connection (null until then).</summary>
         public IReadOnlyDictionary<int, string>? ProfileNames { get; set; }
+
+        /// <summary>Per-profile DPI slots read on the first state read of this connection (null until then).</summary>
+        public IReadOnlyDictionary<int, IReadOnlyList<ushort>>? ProfileDpis { get; set; }
 
         public void Dispose() => _opened.Dispose();
     }

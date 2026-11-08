@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using ProfileHop.Core.Apps;
 using ProfileHop.Core.Config;
 using ProfileHop.Core.Tray;
 using Windows.Win32;
@@ -28,11 +29,13 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private static readonly Guid HidInterfaceGuid = new(0x4D1E55B2, 0xF16F, 0x11CF, 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30);
 
     private const int CmdReload = 1, CmdOpenFolder = 2, CmdAutostart = 3, CmdExit = 4, CmdHotkeys = 5,
-        CmdDeviceAuto = 6, CmdRescan = 7, CmdDeviceBase = 500, CmdProfileBase = 1000;
+        CmdDeviceAuto = 6, CmdRescan = 7, CmdAutoSwitch = 8, CmdDeviceBase = 500, CmdProfileBase = 1000,
+        CmdDefaultBase = 2000;
 
     private static TrayApp? s_app;
 
     private readonly string _configPath;
+    private readonly ConfigSaveGuard _saveGuard; // keeps automatic saves off a broken or hand-edited config.json
     private readonly RollingLog _log;
     private readonly ProfileWorker _worker;
     private readonly Autostart _autostart;
@@ -54,6 +57,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private IReadOnlyList<DeviceMenuItem> _deviceItems = [];
     private long _rescanRequest;        // id of the Rescan request awaiting its answer; 0 = none
     private volatile DeviceListResult? _devicesResult; // latest DevicesChanged result (set on the worker thread)
+    private ForegroundWatcher? _watcher;
+    private string? _currentApp;        // key of the last non-shell app in front (per-app profiles); null = not known yet
 
     /// <param name="acceptPostedCommands">Run menu ids posted as WM_COMMAND by other processes (only for --no-mouse).</param>
     public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart,
@@ -61,6 +66,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         _acceptPostedCommands = acceptPostedCommands;
         _configPath = configPath;
+        _saveGuard = new ConfigSaveGuard(configPath);
+        _saveGuard.Loaded(loaded);
         _config = loaded.Config;
         _log = log;
         _worker = worker;
@@ -69,10 +76,18 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
         s_app = this;
         CreateWindow();
+        _watcher = new ForegroundWatcher(OnAppChanged, _log);
+        _currentApp = _watcher.Current(); // applied once the mouse is reachable (ShowStatus)
         AddTrayIcon();
         RegisterDeviceNotifications();
 
         var problems = new List<string>(loaded.Errors);
+        if (loaded.Broken)
+        {
+            const string BrokenNote = "Using defaults. Learned profiles are not saved until config.json is fixed and reloaded.";
+            _log.Write(LogLevel.Warning, BrokenNote);
+            problems.Add(BrokenNote);
+        }
         problems.AddRange(RegisterHotkeys());
         if (problems.Count > 0) ShowBalloon("ProfileHop", string.Join("\n", problems), warning: true);
 
@@ -107,6 +122,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         _worker.StatusChanged -= OnWorkerStatus;
         _worker.DevicesChanged -= OnWorkerDevices;
+        DisposeWatcher();
         if (!_hwnd.IsNull) PInvoke.DestroyWindow(_hwnd);
         s_app = null;
     }
@@ -234,6 +250,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _worker.StatusChanged -= OnWorkerStatus;
         _worker.DevicesChanged -= OnWorkerDevices;
         HotkeyDialog.Current?.Close(saved: false);
+        DisposeWatcher();
         UnregisterHotkeys();
         if (!_devNotify.IsNull)
         {
@@ -242,6 +259,118 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         }
         RemoveTrayIcon();
         _hwnd = default;
+    }
+
+    private void DisposeWatcher()
+    {
+        _watcher?.Dispose();
+        _watcher = null;
+    }
+
+    // ---- Per-app profiles ----
+
+    private void OnAppChanged(string app)
+    {
+        // Same app back in front (e.g. after the desktop or taskbar): nothing to do. Startup, reconnect, reload and
+        // the menu toggles call ApplyAppProfile directly.
+        if (string.Equals(app, _currentApp, StringComparison.Ordinal)) return;
+        _currentApp = app;
+        ApplyAppProfile(app);
+    }
+
+    /// <summary>
+    /// Asks the worker for <paramref name="app"/>'s profile (its own, else the default). The worker skips it when the
+    /// mouse is already there, so this is cheap to call on every foreground change.
+    /// </summary>
+    private void ApplyAppProfile(string? app)
+    {
+        if (!_config.AutoSwitch || app is null) return;
+        if (AppRules.Target(app, _config.AppProfiles, _config.DefaultProfile) is not { } target) return;
+        // Debug: most of these send nothing (already on that profile); the worker logs an actual switch at Info.
+        _log.Write(LogLevel.Debug, $"Foreground {Path.GetFileName(app)} → profile {target}.");
+        _worker.RequestAutoProfile(target);
+    }
+
+    /// <summary>A user switch, learned for the app in front at the moment of the press (when Switch per app is on).</summary>
+    private UserSwitch UserRequest(bool announce) => new(_config.AutoSwitch ? _currentApp : null, announce);
+
+    /// <summary>Remembers a confirmed user switch for its app, and takes the first profile read as the default.</summary>
+    private void Learn(WorkerStatus status, ProfileHop.Core.ProfileState state)
+    {
+        var profile = state.CurrentProfile;
+        if (profile < 1) return; // host mode: no profile to remember
+        var changed = false;
+        if (_config.AutoSwitch && status.User is { LearnFor: { } app } && AppLearning.Record(_config, app, profile))
+        {
+            _log.Write(LogLevel.Info, $"Remembered profile {profile} for {Path.GetFileName(app)}.");
+            changed = true;
+        }
+        // Only from a plain read (startup, refresh, reconnect, the mouse's own change), never from a switch's result.
+        if (_config.DefaultProfile is null && status.User is null && !status.Automatic)
+        {
+            _config.DefaultProfile = profile;
+            _log.Write(LogLevel.Info, $"Default profile set to {profile} (the mouse's profile at first read).");
+            changed = true;
+        }
+        if (changed) SaveConfigAutomatically("Per-app profile remembered", quiet: status.Automatic);
+    }
+
+    /// <summary>
+    /// An automatic save (learning, default capture): skipped, keeping the change in memory only, when config.json was
+    /// broken at load or has changed on disk since it was last loaded or saved, so it never overwrites the user's file.
+    /// </summary>
+    private void SaveConfigAutomatically(string what, bool quiet)
+    {
+        switch (_saveGuard.CheckAutoSave())
+        {
+            case AutoSaveVerdict.Broken:
+                _log.Write(LogLevel.Warning, $"{what}; not saved: config.json could not be loaded (fix it, then use Reload config).");
+                return;
+            case AutoSaveVerdict.ChangedOnDisk:
+                _log.Write(LogLevel.Warning, $"{what}; not saved: config.json changed on disk since it was loaded (use Reload config).");
+                ShowBalloon("ProfileHop", "config.json changed on disk; use Reload config — not saved", warning: true);
+                return;
+        }
+        SaveConfig(what, quiet);
+    }
+
+    private void SetDefaultProfile(int profile)
+    {
+        if (_config.DefaultProfile != profile)
+        {
+            _config.DefaultProfile = profile;
+            _log.Write(LogLevel.Info, $"Default profile set to {profile}.");
+            SaveConfig("Default profile changed");
+        }
+        // Apps with a remembered profile keep it; anything else follows the new default right away.
+        if (_config.AutoSwitch && (_currentApp is null || !_config.AppProfiles.ContainsKey(_currentApp)))
+            _worker.RequestAutoProfile(profile);
+    }
+
+    private void ToggleAutoSwitch()
+    {
+        _config.AutoSwitch = !_config.AutoSwitch;
+        _log.Write(LogLevel.Info, $"Switch per app: {(_config.AutoSwitch ? "on" : "off")}.");
+        SaveConfig("Switch per app changed");
+        ApplyAppProfile(_currentApp); // turned on: catch up with the app in front (no-op when turned off)
+    }
+
+    /// <summary>
+    /// Saves <see cref="_config"/> (explicit user saves call this directly and overwrite the file as it is); on failure
+    /// logs and, unless <paramref name="quiet"/>, shows a balloon.
+    /// </summary>
+    private void SaveConfig(string what, bool quiet = false)
+    {
+        try
+        {
+            ConfigStore.Save(_configPath, _config);
+            _saveGuard.Saved();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
+            if (!quiet) ShowBalloon("ProfileHop", $"{what} but could not be saved: {ex.Message}", warning: true);
+        }
     }
 
     // ---- Hotkeys ----
@@ -282,10 +411,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _log.Write(LogLevel.Debug, $"Hotkey {entry.Text} → {entry.Action}.");
         switch (entry.Action.Kind)
         {
-            case HotkeyActionKind.NextProfile: _worker.RequestNextProfile(); break;
-            case HotkeyActionKind.PreviousProfile: _worker.RequestPreviousProfile(); break;
+            case HotkeyActionKind.NextProfile: _worker.RequestNextProfile(UserRequest(announce: true)); break;
+            case HotkeyActionKind.PreviousProfile: _worker.RequestPreviousProfile(UserRequest(announce: true)); break;
             case HotkeyActionKind.NextDpiSlot: _worker.RequestNextDpiSlot(); break;
-            default: _worker.RequestProfile(entry.Action.Profile); break;
+            default: _worker.RequestProfile(entry.Action.Profile, UserRequest(announce: true)); break;
         }
     }
 
@@ -306,15 +435,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
         _plan = plan;
         _config.Hotkeys = bindings;
-        try
-        {
-            ConfigStore.Save(_configPath, _config);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
-            ShowBalloon("ProfileHop", $"Hotkeys are active but could not be saved: {ex.Message}", warning: true);
-        }
+        SaveConfig("Hotkeys are active");
         _log.Write(LogLevel.Info, $"Hotkeys saved: {string.Join(", ", plan.Entries.Select(e => $"{e.Text}={e.Action}"))}.");
         return null;
     }
@@ -369,16 +490,36 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         if (status.State is { } state) _lastState = state;
         UpdateIcon();
 
+        if (status.IsReachable)
+        {
+            Learn(status, status.State!);
+            // Reachable again (startup, reconnect, resume): correct a switch missed while the mouse was away.
+            if (!previous.IsReachable) ApplyAppProfile(_currentApp);
+        }
+
+        if (status.Automatic)
+        {
+            // Automatic (per-app) attempts stay silent, even when they fail: no sound, no balloon.
+            if (status.Notice is { } autoNotice) _log.Write(LogLevel.Info, $"Automatic switch: {autoNotice}");
+            return;
+        }
+
+        // A user's or the mouse's own change (automatic ones returned above). Switches beep but no longer show the
+        // "balloon" announcement: profile hotkeys get the switch notification instead.
         var switched = status.IsReachable && previous.IsReachable
             && status.State!.CurrentProfile != previous.State!.CurrentProfile;
         if (status.Notice is { } notice)
         {
             if (_config.Balloon) ShowBalloon("ProfileHop", notice, warning: true);
         }
-        else if (switched)
+        else if (switched || status.User is { Announce: true })
         {
-            if (_config.Sound) PInvoke.MessageBeep(MESSAGEBOX_STYLE.MB_OK);
-            if (_config.Balloon) ShowBalloon("ProfileHop", Tooltip()["ProfileHop: ".Length..], warning: false);
+            if (switched && _config.Sound) PInvoke.MessageBeep(MESSAGEBOX_STYLE.MB_OK);
+            if (status.User is { Announce: true } && _config.SwitchNotification)
+            {
+                var (title, text) = TrayText.SwitchNotification(status.State!, _config.Profiles);
+                ShowBalloon(title, text, warning: false, realtime: true);
+            }
         }
         else if (status.Kind == WorkerStatusKind.Unreachable && previous.Kind != WorkerStatusKind.Unreachable && _config.Balloon)
         {
@@ -444,10 +585,12 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         }
     }
 
-    private void ShowBalloon(string title, string text, bool warning)
+    /// <param name="realtime">NIF_REALTIME: drop the notification if it can't be shown right away (never shown late
+    /// or kept in the notification history).</param>
+    private void ShowBalloon(string title, string text, bool warning, bool realtime = false)
     {
         if (!_iconAdded) return;
-        var nid = NewNotifyData(NOTIFY_ICON_DATA_FLAGS.NIF_INFO);
+        var nid = NewNotifyData(NOTIFY_ICON_DATA_FLAGS.NIF_INFO | (realtime ? NOTIFY_ICON_DATA_FLAGS.NIF_REALTIME : 0));
         nid.szInfoTitle = Truncate(title, 63);
         nid.szInfo = Truncate(text, 255);
         nid.dwInfoFlags = (warning ? NOTIFY_ICON_INFOTIP_FLAGS.NIIF_WARNING : NOTIFY_ICON_INFOTIP_FLAGS.NIIF_INFO)
@@ -475,11 +618,21 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             Append(menu, MENU_ITEM_FLAGS.MF_STRING | MENU_ITEM_FLAGS.MF_GRAYED, 0, Tooltip().Replace("&", "&&", StringComparison.Ordinal));
             Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             var active = _shown.IsReachable ? _shown.State!.CurrentProfile : 0;
-            foreach (var p in ProfileDisplay.Available(_lastState, _config).Profiles)
+            var profiles = ProfileDisplay.Available(_lastState, _config).Profiles;
+            foreach (var p in profiles)
             {
                 var flags = MENU_ITEM_FLAGS.MF_STRING | (p == active ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
                 Append(menu, flags, (nuint)(CmdProfileBase + p), TrayText.MenuLabel(p, _config.Profiles, _lastState?.ProfileNames));
             }
+            Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
+            var defaults = PInvoke.CreatePopupMenu(); // destroyed with its parent
+            foreach (var p in profiles)
+            {
+                var flags = MENU_ITEM_FLAGS.MF_STRING | (p == _config.DefaultProfile ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
+                Append(defaults, flags, (nuint)(CmdDefaultBase + p), TrayText.MenuLabel(p, _config.Profiles, _lastState?.ProfileNames));
+            }
+            Append(menu, MENU_ITEM_FLAGS.MF_POPUP, (nuint)(nint)defaults.Value, "Default &profile");
+            Append(menu, MENU_ITEM_FLAGS.MF_STRING | (_config.AutoSwitch ? MENU_ITEM_FLAGS.MF_CHECKED : 0), CmdAutoSwitch, "S&witch per app");
             Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             // Filled on WM_INITMENUPOPUP from the worker's cached device list; the request below reads the last scan
             // (no device I/O) so the list is fresh by the time the submenu is opened.
@@ -555,15 +708,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         if (!string.Equals(key, _config.Device, StringComparison.OrdinalIgnoreCase))
         {
             _config.Device = key;
-            try
-            {
-                ConfigStore.Save(_configPath, _config);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
-                ShowBalloon("ProfileHop", $"Device changed but could not be saved: {ex.Message}", warning: true);
-            }
+            SaveConfig("Device changed");
         }
         // Always, even when the entry was already checked: drops the connection; the worker reconnects and refreshes.
         _worker.Reconfigure(key, _config.ForceOnboardMode);
@@ -604,11 +749,17 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 if (_rescanRequest != 0) break;
                 _rescanRequest = _worker.RequestDevices(rescan: true);
                 break;
+            case CmdAutoSwitch:
+                ToggleAutoSwitch();
+                break;
             case >= CmdDeviceBase and < CmdProfileBase:
                 if (cmd - CmdDeviceBase < _deviceItems.Count) SelectDevice(_deviceItems[cmd - CmdDeviceBase].Key);
                 break;
+            case >= CmdDefaultBase:
+                SetDefaultProfile(cmd - CmdDefaultBase);
+                break;
             case >= CmdProfileBase:
-                _worker.RequestProfile(cmd - CmdProfileBase);
+                _worker.RequestProfile(cmd - CmdProfileBase, UserRequest(announce: false));
                 break;
         }
     }
@@ -617,6 +768,16 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         if (HotkeyDialog.Current is not null) return; // the dialog owns the hotkeys right now
         var loaded = ConfigStore.Load(_configPath);
+        if (loaded.Broken)
+        {
+            // Keep running on the current settings; change nothing (automatic saves stay off the file: it now differs
+            // from what was last loaded or saved).
+            var errors = string.Join("\n", loaded.Errors);
+            _log.Write(LogLevel.Warning, $"Config not reloaded, current settings kept: {errors}");
+            ShowBalloon("ProfileHop", $"Config not reloaded; current settings kept.\n{errors}", warning: true);
+            return;
+        }
+        _saveGuard.Loaded(loaded);
         var (oldDevice, oldForce) = (_config.Device, _config.ForceOnboardMode);
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;
@@ -629,6 +790,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         UpdateIcon();
         _log.Write(LogLevel.Info, "Config reloaded.");
         ShowBalloon("ProfileHop", problems.Count > 0 ? string.Join("\n", problems) : "Config reloaded.", warning: problems.Count > 0);
+        ApplyAppProfile(_currentApp); // rules or default may have changed (no-op when Switch per app is off)
     }
 
     private void OpenConfigFolder()

@@ -17,7 +17,17 @@ internal sealed partial class ConfigJsonContext : JsonSerializerContext;
 /// <param name="Config">Always usable: defaults when the file was missing or broken.</param>
 /// <param name="Errors">Problems to show the user; empty when everything was fine.</param>
 /// <param name="CreatedDefaults">True when the file did not exist and defaults were written.</param>
-public sealed record ConfigLoadResult(AppConfig Config, IReadOnlyList<string> Errors, bool CreatedDefaults);
+public sealed record ConfigLoadResult(AppConfig Config, IReadOnlyList<string> Errors, bool CreatedDefaults)
+{
+    /// <summary>
+    /// True when the file exists but could not be read or parsed (<see cref="Config"/> is then defaults): it must not
+    /// be overwritten by an automatic save.
+    /// </summary>
+    public bool Broken { get; init; }
+
+    /// <summary>The file's last-write time (UTC) as loaded or written, or null when there is no file.</summary>
+    public DateTime? LastWriteUtc { get; init; }
+}
 
 public static class ConfigStore
 {
@@ -32,7 +42,7 @@ public static class ConfigStore
 
     public static string DefaultPath { get; } = Path.Combine(DefaultDirectory, "config.json");
 
-    /// <summary>Loads config; never throws. Missing file → defaults written. Broken file → defaults, error, file kept.</summary>
+    /// <summary>Loads config; never throws. Missing file → defaults written. Broken file → defaults, error, file kept, <see cref="ConfigLoadResult.Broken"/>.</summary>
     public static ConfigLoadResult Load(string path)
     {
         var errors = new List<string>();
@@ -48,9 +58,11 @@ public static class ConfigStore
                 errors.Add($"Could not write default config to {path}: {ex.Message}");
                 return new ConfigLoadResult(defaults, errors, CreatedDefaults: false);
             }
-            return new ConfigLoadResult(defaults, errors, CreatedDefaults: true);
+            return new ConfigLoadResult(defaults, errors, CreatedDefaults: true) { LastWriteUtc = LastWriteUtc(path) };
         }
 
+        // Taken before reading: an edit that lands while reading then shows up as a change.
+        var lastWrite = LastWriteUtc(path);
         AppConfig config;
         try
         {
@@ -59,17 +71,30 @@ public static class ConfigStore
         }
         catch (JsonException ex)
         {
-            errors.Add($"{path} is not valid, using defaults: {ex.Message}");
-            return new ConfigLoadResult(new AppConfig(), errors, CreatedDefaults: false);
+            errors.Add($"{path} is not valid: {ex.Message}");
+            return new ConfigLoadResult(new AppConfig(), errors, CreatedDefaults: false) { Broken = true, LastWriteUtc = lastWrite };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            errors.Add($"Could not read {path}, using defaults: {ex.Message}");
-            return new ConfigLoadResult(new AppConfig(), errors, CreatedDefaults: false);
+            errors.Add($"Could not read {path}: {ex.Message}");
+            return new ConfigLoadResult(new AppConfig(), errors, CreatedDefaults: false) { Broken = true, LastWriteUtc = lastWrite };
         }
 
         Normalize(config, errors);
-        return new ConfigLoadResult(config, errors, CreatedDefaults: false);
+        return new ConfigLoadResult(config, errors, CreatedDefaults: false) { LastWriteUtc = lastWrite };
+    }
+
+    /// <summary>The file's last-write time (UTC), or null when it does not exist or can't be queried.</summary>
+    public static DateTime? LastWriteUtc(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -131,6 +156,25 @@ public static class ConfigStore
                 config.Cycle = config.Cycle.Where(n => n >= 1).ToList();
             }
         }
+
+        if (config.DefaultProfile is < 1)
+        {
+            errors.Add($"defaultProfile {config.DefaultProfile} is invalid (profiles start at 1); ignored.");
+            config.DefaultProfile = null;
+        }
+
+        var apps = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, profile) in config.AppProfiles ?? [])
+        {
+            var key = path?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(key))
+                errors.Add($"appProfiles has a blank path (profile {profile}); ignored.");
+            else if (profile < 1)
+                errors.Add($"appProfiles: {key} maps to profile {profile}, which is invalid (profiles start at 1); ignored.");
+            else
+                apps[key] = profile; // paths that differ only in case collapse; the last one wins
+        }
+        config.AppProfiles = apps;
 
         config.Hotkeys = config.Hotkeys.Where(h => h is not null).ToList();
     }

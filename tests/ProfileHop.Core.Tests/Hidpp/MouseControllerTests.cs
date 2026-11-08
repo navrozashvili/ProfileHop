@@ -992,6 +992,64 @@ public sealed class MouseControllerTests : IDisposable
         Assert.Equal(["400", "600", "800", "1600", "3200"], s.ProfileNames.OrderBy(kv => kv.Key).Select(kv => kv.Value));
     }
 
+    // ---- per-profile DPI and device name ----
+
+    [Fact]
+    public void GetState_fills_profile_dpis_and_device_name()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(2, 1);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (2, true), (3, true), (4, true), (5, true));
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal("PRO X2 SUPERSTRIKE", s.DeviceName);
+        Assert.Equal([1, 2, 3, 4, 5], s.ProfileDpis.Keys.OrderBy(k => k));
+        foreach (ushort p in new ushort[] { 1, 2, 3, 4, 5 })
+            Assert.Equal(ProfileSector.DpiSlots(0x08, Format08Fixture.Sector(p)), s.ProfileDpis[p]);
+        ushort slot = s.ProfileDpis[2][1];
+        Assert.Equal(slot == 0 ? null : (int?)slot, s.CurrentDpi);
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function is 6 or 7 or 8);
+    }
+
+    [Fact]
+    public void Profile_dpis_are_read_once_per_connection()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (2, true));
+
+        Controller.GetState();
+        int reads = ProfileSectorReads();
+        ProfileState second = Controller.GetState();
+
+        Assert.Equal(reads, ProfileSectorReads());
+        Assert.NotEmpty(second.ProfileDpis);
+    }
+
+    [Fact]
+    public void Unreadable_dpi_sector_gives_no_profile_dpis_instead_of_throwing()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (4, true));
+        _mouse.Sectors.Remove(0x0004);
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal([1], s.ProfileDpis.Keys);
+        Assert.Null(new ProfileState(1, 4, [1, 4], 0) { ProfileDpis = s.ProfileDpis }.CurrentDpi);
+    }
+
+    [Fact]
+    public void Unknown_profile_format_reads_no_profile_dpis()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.ProfileFormat = 0x09;
+
+        Assert.Empty(Controller.GetState().ProfileDpis);
+    }
+
     [Fact]
     public void Unknown_profile_format_reads_no_names()
     {

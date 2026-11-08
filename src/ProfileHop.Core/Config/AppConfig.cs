@@ -32,6 +32,18 @@ public sealed class AppConfig
     /// <summary>Which device to control (key chosen from the tray's Device menu); null = automatic.</summary>
     public string? Device { get; set; }
 
+    /// <summary>Profile for apps with no entry in <see cref="AppProfiles"/>; null = set from the mouse at its first read.</summary>
+    public int? DefaultProfile { get; set; }
+
+    /// <summary>Per-app profiles: lower-cased full exe path → profile number (1-based).</summary>
+    public Dictionary<string, int> AppProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Switch profiles automatically when the foreground app changes.</summary>
+    public bool AutoSwitch { get; set; } = true;
+
+    /// <summary>Show a Windows notification (mouse, profile, DPI) when a profile hotkey switches the profile.</summary>
+    public bool SwitchNotification { get; set; } = true;
+
     private const uint VkF8 = 0x77;
     private const uint VkF9 = 0x78;
     private const int DefaultProfileCount = 5;

@@ -17,6 +17,20 @@ public sealed record ProfileState(
 
     /// <summary>Profile number → name stored on the mouse (read once per connection); missing = no name.</summary>
     public IReadOnlyDictionary<int, string> ProfileNames { get; init; } = NoNames;
+
+    private static readonly IReadOnlyDictionary<int, IReadOnlyList<ushort>> NoDpis = new Dictionary<int, IReadOnlyList<ushort>>();
+
+    /// <summary>Profile number → its five DPI slot values (0 = disabled; read once per connection); empty when unknown.</summary>
+    public IReadOnlyDictionary<int, IReadOnlyList<ushort>> ProfileDpis { get; init; } = NoDpis;
+
+    /// <summary>The connected device's HID++ name (e.g. <c>PRO X2 SUPERSTRIKE</c>), or null if it has none.</summary>
+    public string? DeviceName { get; init; }
+
+    /// <summary>DPI of the active slot of the current profile; null when not read or the slot is disabled (0).</summary>
+    public int? CurrentDpi =>
+        DpiIndex is { } i && ProfileDpis.TryGetValue(CurrentProfile, out var slots) && i >= 0 && i < slots.Count && slots[i] != 0
+            ? slots[i]
+            : null;
 }
 
 /// <summary>A device that qualifies for control (HID++ 2.0+, has OnboardProfiles 0x8100), as seen by the last scan.</summary>
