@@ -14,6 +14,14 @@ public enum HotkeyActionKind
 /// <summary>What a hotkey does. <see cref="Profile"/> is the 1-based target for <see cref="HotkeyActionKind.Profile"/>.</summary>
 public readonly record struct HotkeyAction(HotkeyActionKind Kind, int Profile)
 {
+    /// <summary>Config text: "next-profile", "next-dpi-slot" or "profile N" (parsed back by <see cref="TryParse"/>).</summary>
+    public override string ToString() => Kind switch
+    {
+        HotkeyActionKind.NextProfile => "next-profile",
+        HotkeyActionKind.NextDpiSlot => "next-dpi-slot",
+        _ => "profile " + Profile.ToString(CultureInfo.InvariantCulture),
+    };
+
     public static bool TryParse(string? text, out HotkeyAction action, [NotNullWhen(false)] out string? error)
     {
         action = default;
