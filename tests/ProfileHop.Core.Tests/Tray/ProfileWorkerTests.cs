@@ -63,8 +63,25 @@ public class ProfileWorkerTests
         public IReadOnlyList<KnownDevice> ListDevices(bool rescan)
         {
             lock (Calls) Calls.Add(rescan ? "rescan" : "list");
+            if (BlockListUntilCancelled)
+            {
+                ListEntered.Set();
+                Cancelled.Wait();
+                throw new OperationCanceledException();
+            }
             if (ListFailsWith is not null) throw ListFailsWith;
             return Devices;
+        }
+
+        /// <summary>ListDevices blocks (like a long rescan) until <see cref="Cancel"/>.</summary>
+        public bool BlockListUntilCancelled { get; set; }
+        public ManualResetEventSlim ListEntered { get; } = new();
+        public ManualResetEventSlim Cancelled { get; } = new();
+
+        public void Cancel()
+        {
+            lock (Calls) Calls.Add("cancel");
+            Cancelled.Set();
         }
 
         public void Dispose() => Disposed = true;
@@ -614,6 +631,22 @@ public class ProfileWorkerTests
         Assert.False(mouse.HasSubscribers);
         Assert.False(mouse.Disposed); // the switcher is owned by the caller
         worker.RequestProfile(1); // after dispose: ignored, no throw
+    }
+
+    [Fact]
+    public void Dispose_cancels_an_in_flight_switcher_call_so_exit_is_prompt()
+    {
+        var mouse = new FakeSwitcher { BlockListUntilCancelled = true };
+        var worker = new ProfileWorker(mouse);
+        worker.Start();
+        worker.RequestDevices(rescan: true);
+        Assert.True(mouse.ListEntered.Wait(TimeSpan.FromSeconds(5)));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        worker.Dispose();
+
+        Assert.True(mouse.Cancelled.IsSet);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"Dispose took {sw.Elapsed}");
     }
 
     // ---- device choice ----

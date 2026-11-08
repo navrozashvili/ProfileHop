@@ -213,6 +213,7 @@ public sealed class ProfileWorker : IDisposable
         return true;
     }
 
+    /// <summary>Stops the worker thread and cancels the switcher (<see cref="IProfileSwitcher.Cancel"/>); the switcher itself stays the caller's to dispose.</summary>
     public void Dispose()
     {
         Thread? thread;
@@ -224,7 +225,9 @@ public sealed class ProfileWorker : IDisposable
             Monitor.PulseAll(_lock);
         }
         _switcher.ProfileChangedByDevice -= OnProfileChangedByDevice;
-        // A switcher call can take a while (wireless wake-up); don't hang exit on it.
+        // A switcher call can take a while (a rescan probes every receiver index): cancel it so it stops at the next
+        // probe, and still don't hang exit on it.
+        _switcher.Cancel();
         thread?.Join(TimeSpan.FromSeconds(3));
     }
 

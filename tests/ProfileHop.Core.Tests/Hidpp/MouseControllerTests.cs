@@ -809,6 +809,37 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
+    public void Cancel_during_a_scan_stops_before_the_next_probe_and_closes_what_was_opened()
+    {
+        // Exit during a long rescan: Cancel (from the exiting thread) must end the scan at the next probe instead of
+        // walking every index of every receiver while Dispose waits for the lock.
+        _receiver.Paired[0x06] = _mouse; // the scan would try indexes 1..5 first
+        _source.Add("receiver-C54D", 0xC54D, req =>
+        {
+            Controller.Cancel();
+            return _receiver.Handle(req);
+        });
+        AddSecondReceiverMouse();
+
+        Assert.Throws<OperationCanceledException>(() => Controller.ListDevices(rescan: true));
+
+        var (_, transport) = Assert.Single(_source.Opened); // the second receiver was never opened
+        Assert.Single(transport.Written);                   // index 1 only
+        Assert.True(transport.IsDisposed);
+    }
+
+    [Fact]
+    public void Calls_after_cancel_throw_without_device_io()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => Controller.GetState());
+        Assert.Empty(_source.Opened);
+        Controller.Dispose(); // still fine
+    }
+
+    [Fact]
     public void Controller_passes_its_log_to_the_HID_client()
     {
         AddReceiverWithMouseAt(0x01);
