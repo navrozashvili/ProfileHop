@@ -34,7 +34,10 @@ public sealed class HidppClient : IDisposable
         _pump = Task.Run(PumpAsync);
     }
 
-    /// <summary>Raised on the pump thread for every swId-0 frame. Handlers must not call <see cref="Request"/> synchronously.</summary>
+    /// <summary>
+    /// Raised on the pump thread for every swId-0 frame and every HID++ 1.0 receiver notification (short report,
+    /// sub-id 0x40-0x7F, e.g. <see cref="DeviceConnection"/>). Handlers must not call <see cref="Request"/> synchronously.
+    /// </summary>
     public event Action<HidppMessage>? Notification;
 
     /// <summary>True once the transport's report stream has ended (device gone) or the client was disposed.</summary>
@@ -162,7 +165,10 @@ public sealed class HidppClient : IDisposable
             }
         }
 
-        if (msg.IsNotification)
+        // HID++ 1.0 receiver notifications (short report, sub-id 0x40-0x7F) carry data, not a swId, in byte 3.
+        // Our requests and their replies are long reports, so a short one in that range is never a reply.
+        bool hidpp10Notification = !msg.IsLong && msg.FeatureIndex is >= 0x40 and <= 0x7F;
+        if (msg.IsNotification || hidpp10Notification)
         {
             try
             {

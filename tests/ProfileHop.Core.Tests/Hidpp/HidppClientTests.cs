@@ -323,4 +323,19 @@ public class HidppClientTests
         var ex = Assert.Throws<IOException>(() => c.Request(0x01, 0x09, 4, []));
         Assert.Equal("gone", ex.Message);
     }
+
+    [Fact]
+    public async Task Receiver_connection_notification_is_raised_although_byte_3_is_not_swid_0()
+    {
+        var (t, c) = Create();
+        using var _ = c;
+        var received = new TaskCompletionSource<HidppMessage>();
+        c.Notification += m => received.TrySetResult(m);
+
+        t.Push(Short(0x01, 0x41, 0x04, 0x00, 0x8A, 0x40)); // byte 3 = protocol 0x04, not a software id
+
+        HidppMessage n = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0x01, n.DeviceIndex);
+        Assert.Equal(0x41, n.FeatureIndex);
+    }
 }
