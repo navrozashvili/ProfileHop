@@ -37,6 +37,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private readonly ProfileWorker _worker;
     private readonly Autostart _autostart;
     private readonly uint _taskbarCreated;
+    private readonly bool _acceptPostedCommands;
     private AppConfig _config;
     private HotkeyPlan _plan = new([], []);
     private readonly List<int> _registered = [];
@@ -54,8 +55,11 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private long _rescanRequest;        // id of the Rescan request awaiting its answer; 0 = none
     private volatile DeviceListResult? _devicesResult; // latest DevicesChanged result (set on the worker thread)
 
-    public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart)
+    /// <param name="acceptPostedCommands">Run menu ids posted as WM_COMMAND by other processes (only for --no-mouse).</param>
+    public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart,
+        bool acceptPostedCommands = false)
     {
+        _acceptPostedCommands = acceptPostedCommands;
         _configPath = configPath;
         _config = loaded.Config;
         _log = log;
@@ -157,8 +161,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 OnHotkey((int)wParam.Value);
                 return new LRESULT(0);
 
-            case PInvoke.WM_COMMAND: // menu ids also work as posted commands (scripting/tests)
-                Execute((int)(wParam.Value & 0xFFFF));
+            case PInvoke.WM_COMMAND:
+                // The menu returns its choice (TPM_RETURNCMD) and the Hotkeys window has its own window procedure, so a
+                // WM_COMMAND here can only be posted by another process. Ignored, except under --no-mouse (scripted UI tests).
+                if (_acceptPostedCommands) Execute((int)(wParam.Value & 0xFFFF));
                 return new LRESULT(0);
 
             case WmStatus:
