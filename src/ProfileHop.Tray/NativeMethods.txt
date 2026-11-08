@@ -58,7 +58,14 @@ WM_COMMAND
 WM_INITMENUPOPUP
 WM_SETFONT
 // Hotkeys dialog (created only while open)
-InitCommonControlsEx
+SetWindowSubclass
+RemoveWindowSubclass
+DefSubclassProc
+GetKeyState
+SetWindowText
+GetSysColor
+GetSysColorBrush
+SetBkColor
 SendMessage
 IsDialogMessage
 ShowWindow
