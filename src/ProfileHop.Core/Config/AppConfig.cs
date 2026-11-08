@@ -44,7 +44,7 @@ public sealed class AppConfig
     /// <summary>Show a Windows notification (mouse, profile, DPI) when a profile hotkey switches the profile.</summary>
     public bool SwitchNotification { get; set; } = true;
 
-    private const uint VkF8= 0x77;
+    private const uint VkF8 = 0x77;
     private const uint VkF9 = 0x78;
     private const int DefaultProfileCount = 5;
 

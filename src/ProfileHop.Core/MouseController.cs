@@ -403,11 +403,6 @@ public sealed class MouseController : IProfileSwitcher
         };
     }
 
-    /// <summary>
-    /// Names stored on the mouse (<see cref="ProfileSector.Name"/>), read once per connection with memoryRead only: the
-    /// 48-byte name field of each enabled profile's sector, plus profiles 1..profile count when the directory lists
-    /// fewer than two (the real mouse does; see ProfileCycle). A profile whose sector can't be read has no name.
-    /// </summary>
     /// <summary>Enabled profiles, plus 1..profile count when the directory lists fewer than two.</summary>
     private static SortedSet<int> ProfilesToRead(Connection c, IReadOnlyList<int> enabled)
     {
@@ -425,6 +420,11 @@ public sealed class MouseController : IProfileSwitcher
         return profiles;
     }
 
+    /// <summary>
+    /// Names stored on the mouse (<see cref="ProfileSector.Name"/>), read once per connection with memoryRead only: the
+    /// 48-byte name field of each enabled profile's sector, plus profiles 1..profile count when the directory lists
+    /// fewer than two (the real mouse does; see ProfileCycle). A profile whose sector can't be read has no name.
+    /// </summary>
     private static Dictionary<int, string> ReadProfileNames(Connection c, IReadOnlyList<int> enabled)
     {
         var names = new Dictionary<int, string>();

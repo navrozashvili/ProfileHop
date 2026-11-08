@@ -286,7 +286,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     {
         if (!_config.AutoSwitch || app is null) return;
         if (AppRules.Target(app, _config.AppProfiles, _config.DefaultProfile) is not { } target) return;
-        _log.Write(LogLevel.Info, $"Foreground {Path.GetFileName(app)} → profile {target}.");
+        // Debug: most of these send nothing (already on that profile); the worker logs an actual switch at Info.
+        _log.Write(LogLevel.Debug, $"Foreground {Path.GetFileName(app)} → profile {target}.");
         _worker.RequestAutoProfile(target);
     }
 
@@ -304,7 +305,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             _log.Write(LogLevel.Info, $"Remembered profile {profile} for {Path.GetFileName(app)}.");
             changed = true;
         }
-        if (_config.DefaultProfile is null)
+        // Only from a plain read (startup, refresh, reconnect, the mouse's own change), never from a switch's result.
+        if (_config.DefaultProfile is null && status.User is null && !status.Automatic)
         {
             _config.DefaultProfile = profile;
             _log.Write(LogLevel.Info, $"Default profile set to {profile} (the mouse's profile at first read).");
@@ -516,7 +518,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             if (status.User is { Announce: true } && _config.SwitchNotification)
             {
                 var (title, text) = TrayText.SwitchNotification(status.State!, _config.Profiles);
-                ShowBalloon(title, text, warning: false);
+                ShowBalloon(title, text, warning: false, realtime: true);
             }
         }
         else if (status.Kind == WorkerStatusKind.Unreachable && previous.Kind != WorkerStatusKind.Unreachable && _config.Balloon)
@@ -583,10 +585,12 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         }
     }
 
-    private void ShowBalloon(string title, string text, bool warning)
+    /// <param name="realtime">NIF_REALTIME: drop the notification if it can't be shown right away (never shown late
+    /// or kept in the notification history).</param>
+    private void ShowBalloon(string title, string text, bool warning, bool realtime = false)
     {
         if (!_iconAdded) return;
-        var nid = NewNotifyData(NOTIFY_ICON_DATA_FLAGS.NIF_INFO);
+        var nid = NewNotifyData(NOTIFY_ICON_DATA_FLAGS.NIF_INFO | (realtime ? NOTIFY_ICON_DATA_FLAGS.NIF_REALTIME : 0));
         nid.szInfoTitle = Truncate(title, 63);
         nid.szInfo = Truncate(text, 255);
         nid.dwInfoFlags = (warning ? NOTIFY_ICON_INFOTIP_FLAGS.NIIF_WARNING : NOTIFY_ICON_INFOTIP_FLAGS.NIIF_INFO)
@@ -786,6 +790,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         UpdateIcon();
         _log.Write(LogLevel.Info, "Config reloaded.");
         ShowBalloon("ProfileHop", problems.Count > 0 ? string.Join("\n", problems) : "Config reloaded.", warning: problems.Count > 0);
+        ApplyAppProfile(_currentApp); // rules or default may have changed (no-op when Switch per app is off)
     }
 
     private void OpenConfigFolder()
