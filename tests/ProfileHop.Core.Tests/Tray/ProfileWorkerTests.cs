@@ -50,6 +50,21 @@ public class ProfileWorkerTests
             lock (Calls) Calls.Add("stale");
         }
 
+        public List<KnownDevice> Devices { get; set; } = [];
+        public Exception? ListFailsWith { get; set; }
+
+        public void Configure(string? preferredDevice, bool forceOnboardMode)
+        {
+            lock (Calls) Calls.Add($"configure {preferredDevice ?? "auto"} {(forceOnboardMode ? "force" : "noforce")}");
+        }
+
+        public IReadOnlyList<KnownDevice> ListDevices(bool rescan)
+        {
+            lock (Calls) Calls.Add(rescan ? "rescan" : "list");
+            if (ListFailsWith is not null) throw ListFailsWith;
+            return Devices;
+        }
+
         public void Dispose() => Disposed = true;
 
         private void ThrowIfFailing()

@@ -12,6 +12,7 @@ internal static class CliOutput
         Console.WriteLine(
             $"Device: PID 0x{m.ProductId:X4} ({m.Product ?? "?"}), index 0x{m.DeviceIndex:X2}, HID++ {m.Version}, " +
             $"type {DeviceType(m.DeviceType)}, name \"{m.Name ?? "-"}\"");
+        Console.WriteLine($"Device key (config \"device\"): {m.Key}");
         if (m.TypeFallback)
             Console.WriteLine("Warning: no device reported type mouse; using the first device with ONBOARD_PROFILES (0x8100).");
     }

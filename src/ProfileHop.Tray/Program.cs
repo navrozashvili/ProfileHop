@@ -86,6 +86,10 @@ internal static class Program
 
         public void MarkStale() { }
 
+        public void Configure(string? preferredDevice, bool forceOnboardMode) { }
+
+        public IReadOnlyList<KnownDevice> ListDevices(bool rescan) => [];
+
         public void Dispose() { }
     }
 }
