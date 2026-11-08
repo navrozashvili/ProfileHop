@@ -31,6 +31,48 @@ public class TrayTextTests
         Assert.Equal("4  Profile 4", TrayText.MenuLabel(4, Names, mouse));
     }
 
+    private static ProfileState Switched(int profile, int? dpiIndex, ushort[]? slots, string? device) =>
+        new(1, profile, [1, 2], dpiIndex)
+        {
+            DeviceName = device,
+            ProfileDpis = slots is null ? new Dictionary<int, IReadOnlyList<ushort>>() : new Dictionary<int, IReadOnlyList<ushort>> { [profile] = slots },
+        };
+
+    [Fact]
+    public void SwitchNotification_names_profile_and_dpi()
+    {
+        var state = Switched(2, 1, [400, 800, 1600, 0, 0], "PRO X2 SUPERSTRIKE");
+        Assert.Equal(("PRO X2 SUPERSTRIKE", "Game (profile 2) · 800 DPI"), TrayText.SwitchNotification(state, Names));
+    }
+
+    [Fact]
+    public void SwitchNotification_without_dpi_data()
+    {
+        var state = Switched(2, 1, null, "PRO X2 SUPERSTRIKE");
+        Assert.Equal("Game (profile 2)", TrayText.SwitchNotification(state, Names).Text);
+    }
+
+    [Fact]
+    public void SwitchNotification_without_a_name()
+    {
+        var state = Switched(2, 1, [400, 800, 1600, 0, 0], "PRO X2 SUPERSTRIKE");
+        Assert.Equal("Profile 2 · 800 DPI", TrayText.SwitchNotification(state, []).Text);
+    }
+
+    [Fact]
+    public void SwitchNotification_without_device_name_titles_ProfileHop()
+    {
+        Assert.Equal("ProfileHop", TrayText.SwitchNotification(Switched(2, 1, null, null), Names).Title);
+    }
+
+    [Fact]
+    public void SwitchNotification_leaves_out_a_zero_dpi_slot()
+    {
+        var state = Switched(2, 3, [400, 800, 1600, 0, 0], null);
+        Assert.Null(state.CurrentDpi);
+        Assert.Equal("Game (profile 2)", TrayText.SwitchNotification(state, Names).Text);
+    }
+
     [Fact]
     public void Unnamed_profile()
     {
