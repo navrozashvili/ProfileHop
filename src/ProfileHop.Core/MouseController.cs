@@ -74,6 +74,7 @@ public sealed class MouseController : IProfileSwitcher
     private bool _forceOnboardMode;
     private byte _ping = 0x5A;
     private bool _disposed;
+    private volatile bool _cancelled;
 
     public MouseController(IHidDeviceSource source, TimeSpan? requestTimeout = null, TimeProvider? timeProvider = null,
         ILog? log = null)
@@ -236,6 +237,15 @@ public sealed class MouseController : IProfileSwitcher
         lock (_lock) CloseConnection();
     }
 
+    /// <inheritdoc/>
+    public void Cancel() => _cancelled = true; // no lock: the point is to reach a scan that holds it
+
+    private void ThrowIfCancelled()
+    {
+        if (_cancelled)
+            throw new OperationCanceledException("ProfileHop is exiting.");
+    }
+
     public void Dispose()
     {
         lock (_lock)
@@ -380,6 +390,7 @@ public sealed class MouseController : IProfileSwitcher
 
     private Connection EnsureConnected(bool fullScan)
     {
+        ThrowIfCancelled();
         if (_connection is { Client.IsClosed: false } live)
             return live;
         CloseConnection();
@@ -433,7 +444,14 @@ public sealed class MouseController : IProfileSwitcher
         {
             foreach (HidDevice device in _source.Enumerate())
             {
+                ThrowIfCancelled();
                 ushort pid = device.Collections.Count > 0 ? device.Collections[0].ProductId : (ushort)0;
+                if (HidReports.Unusable(device.Collections) is { } unusable)
+                {
+                    probes.Add(new DeviceProbe(device, pid, 0, null, false, null, null, unusable));
+                    continue;
+                }
+
                 IHidTransport transport;
                 try
                 {
@@ -453,6 +471,7 @@ public sealed class MouseController : IProfileSwitcher
                 {
                     foreach (byte index in ProbeOrder)
                     {
+                        ThrowIfCancelled();
                         (DeviceProbe probe, Candidate? candidate) = ProbeIndex(opened, pid, index);
                         probes.Add(probe);
                         if (candidate is null)
@@ -462,7 +481,7 @@ public sealed class MouseController : IProfileSwitcher
                             break;
                     }
                 }
-                catch (Exception ex) when (ex is not OutOfMemoryException)
+                catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
                 {
                     probes.Add(new DeviceProbe(device, pid, 0, null, false, null, null, "transport failed: " + ex.Message));
                     found.Clear();
@@ -475,6 +494,12 @@ public sealed class MouseController : IProfileSwitcher
                 if (!fullScan && (preference is null ? mouse : preferred) is not null)
                     break;
             }
+        }
+        catch
+        {
+            foreach (Opened o in open)
+                o.Dispose();
+            throw;
         }
         finally
         {

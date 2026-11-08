@@ -114,6 +114,7 @@ internal sealed unsafe class HotkeyDialog
     [SupportedOSPlatform(MinOs)]
     private void Create()
     {
+        var work = CursorWorkArea();
         fixed (char* className = ClassName)
         fixed (char* title = "ProfileHop hotkeys")
         {
@@ -132,8 +133,10 @@ internal sealed unsafe class HotkeyDialog
                 s_classRegistered = true;
             }
 
+            // Created (hidden) inside the work area of the monitor under the cursor, so GetDpiForWindow below is that
+            // monitor's DPI and layout, font and frame all use it.
             Hwnd = PInvoke.CreateWindowEx(WINDOW_EX_STYLE.WS_EX_DLGMODALFRAME | WINDOW_EX_STYLE.WS_EX_CONTROLPARENT,
-                className, title, Style, PInvoke.CW_USEDEFAULT, PInvoke.CW_USEDEFAULT, 100, 100, default, default, Instance, null);
+                className, title, Style, work.left, work.top, 100, 100, default, default, Instance, null);
         }
         if (Hwnd.IsNull) throw new InvalidOperationException($"CreateWindowEx failed: {Marshal.GetLastPInvokeError()}");
 
@@ -174,14 +177,23 @@ internal sealed unsafe class HotkeyDialog
         PInvoke.AdjustWindowRectExForDpi(&rect, Style, false, WINDOW_EX_STYLE.WS_EX_DLGMODALFRAME | WINDOW_EX_STYLE.WS_EX_CONTROLPARENT, dpi);
         var w = rect.right - rect.left;
         var h = rect.bottom - rect.top;
-        var screenW = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSCREEN);
-        var screenH = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYSCREEN);
-        PInvoke.SetWindowPos(Hwnd, default, Math.Max(0, (screenW - w) / 2), Math.Max(0, (screenH - h) / 2), w, h,
-            SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
+        var (x, y0) = WindowPlacement.Center(work.left, work.top, work.right, work.bottom, w, h);
+        PInvoke.SetWindowPos(Hwnd, default, x, y0, w, h, SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
         PInvoke.ShowWindow(Hwnd, SHOW_WINDOW_CMD.SW_SHOW);
         PInvoke.SetForegroundWindow(Hwnd);
         if (_boxes.Count > 0) PInvoke.SetFocus(_boxes[0]);
+    }
+
+    /// <summary>Work area of the monitor under the cursor (nearest one if the cursor is off-screen).</summary>
+    private static RECT CursorWorkArea()
+    {
+        PInvoke.GetCursorPos(out var cursor);
+        var monitor = PInvoke.MonitorFromPoint(cursor, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONEAREST);
+        var info = new MONITORINFO { cbSize = (uint)sizeof(MONITORINFO) };
+        return PInvoke.GetMonitorInfo(monitor, &info)
+            ? info.rcWork
+            : new RECT { right = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSCREEN), bottom = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYSCREEN) };
     }
 
     private static WINDOW_STYLE Style => WINDOW_STYLE.WS_CAPTION | WINDOW_STYLE.WS_SYSMENU | WINDOW_STYLE.WS_POPUP;

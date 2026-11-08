@@ -21,3 +21,16 @@ public sealed record WorkerStatus(WorkerStatusKind Kind, ProfileState? State, st
 
     public bool IsReachable => Kind == WorkerStatusKind.Reachable;
 }
+
+/// <summary>
+/// One answer to <see cref="ProfileWorker.RequestDevices"/>. Requests run in order and coalesce, so this answers every
+/// request with an id up to <see cref="RequestId"/>.
+/// </summary>
+/// <param name="Devices">The device list (on failure: the previous list, or empty).</param>
+/// <param name="RequestId">Id of the latest request this batch answered.</param>
+/// <param name="Error">Why listing failed, or null.</param>
+public sealed record DeviceListResult(IReadOnlyList<KnownDevice> Devices, long RequestId, string? Error)
+{
+    /// <summary>True when this answers request <paramref name="requestId"/> (0 = no request pending: false).</summary>
+    public bool Answers(long requestId) => requestId != 0 && RequestId >= requestId;
+}

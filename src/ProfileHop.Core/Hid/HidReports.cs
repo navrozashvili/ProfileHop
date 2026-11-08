@@ -43,30 +43,26 @@ public static class HidReports
         return buffer;
     }
 
-    /// <summary>Index of the collection to write to: the long collection if present, else the first with an output report; -1 if none.</summary>
+    /// <summary>
+    /// Why a device can't be used, or null. Every request is sent as a long (0x11) report, and the HID++ 2.0 calls we
+    /// use need long replies (memoryRead returns 16 bytes), so a device with only the short collection is skipped.
+    /// </summary>
+    public static string? Unusable(IReadOnlyList<HidCollection> collections) =>
+        ChooseWriteTarget(collections) < 0 ? "no long HID++ collection" : null;
+
+    /// <summary>Index of the writable long collection (usage 2, with an output report); -1 if there is none.</summary>
     public static int ChooseWriteTarget(IReadOnlyList<HidCollection> collections)
     {
         ArgumentNullException.ThrowIfNull(collections);
-        int fallback = -1;
         for (int i = 0; i < collections.Count; i++)
         {
             HidCollection c = collections[i];
-            if (c.OutputReportLength <= 0)
-            {
-                continue;
-            }
-
-            if (Classify(c.UsagePage, c.Usage) == HidReportKind.Long)
+            if (c.OutputReportLength > 0 && Classify(c.UsagePage, c.Usage) == HidReportKind.Long)
             {
                 return i;
             }
-
-            if (fallback < 0)
-            {
-                fallback = i;
-            }
         }
 
-        return fallback;
+        return -1;
     }
 }

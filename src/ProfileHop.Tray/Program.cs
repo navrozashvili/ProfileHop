@@ -21,7 +21,8 @@ internal static class Program
 
     /// <summary>
     /// Usage: <c>profilehop [--no-mouse] [--data-dir &lt;folder&gt;]</c>. <c>--no-mouse</c> runs the UI with a switcher
-    /// that always fails (grey icon), for testing without hardware. <c>--data-dir</c> replaces %APPDATA%\ProfileHop.
+    /// that always fails (grey icon), for testing without hardware; only then does the tray window run menu ids posted
+    /// to it as WM_COMMAND (scripted UI tests). <c>--data-dir</c> replaces %APPDATA%\ProfileHop.
     /// </summary>
     [STAThread]
     private static unsafe int Main(string[] args)
@@ -55,7 +56,7 @@ internal static class Program
             };
             var autostart = new Autostart(new RegistryRunKeyStore(), Environment.ProcessPath ?? "profilehop.exe");
 
-            using var app = new TrayApp(configPath, loaded, log, worker, autostart);
+            using var app = new TrayApp(configPath, loaded, log, worker, autostart, acceptPostedCommands: noMouse);
             var code = app.Run();
             log.Write(LogLevel.Info, "ProfileHop exiting.");
             return code;
@@ -92,6 +93,8 @@ internal static class Program
         public void Configure(string? preferredDevice, bool forceOnboardMode) { }
 
         public IReadOnlyList<KnownDevice> ListDevices(bool rescan) => [];
+
+        public void Cancel() { }
 
         public void Dispose() { }
     }

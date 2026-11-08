@@ -809,6 +809,75 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
+    public void Cancel_during_a_scan_stops_before_the_next_probe_and_closes_what_was_opened()
+    {
+        // Exit during a long rescan: Cancel (from the exiting thread) must end the scan at the next probe instead of
+        // walking every index of every receiver while Dispose waits for the lock.
+        _receiver.Paired[0x06] = _mouse; // the scan would try indexes 1..5 first
+        _source.Add("receiver-C54D", 0xC54D, req =>
+        {
+            Controller.Cancel();
+            return _receiver.Handle(req);
+        });
+        AddSecondReceiverMouse();
+
+        Assert.Throws<OperationCanceledException>(() => Controller.ListDevices(rescan: true));
+
+        var (_, transport) = Assert.Single(_source.Opened); // the second receiver was never opened
+        Assert.Single(transport.Written);                   // index 1 only
+        Assert.True(transport.IsDisposed);
+    }
+
+    [Fact]
+    public void Device_without_a_long_collection_is_not_opened_and_the_probe_says_why()
+    {
+        var shortOnly = new Core.Hid.HidDevice("short-only",
+            [new Core.Hid.HidCollection("short-only&col01", 0x046D, 0xC53F, "USB Receiver", 0xFF00, 0x0001, 7, 7)]);
+        var source = new ShortOnlyFirstSource(shortOnly, _source);
+        AddReceiverWithMouseAt(0x01);
+        _controller = new MouseController(source, Timeout);
+
+        ConnectedMouse m = Controller.Connect(fullScan: true);
+
+        Assert.Equal(0xC54D, m.ProductId);
+        Assert.False(source.OpenedShortOnly);
+        DeviceProbe skipped = Controller.LastProbe[0];
+        Assert.Same(shortOnly, skipped.Device);
+        Assert.Equal(0xC53F, skipped.ProductId);
+        Assert.Equal("no long HID++ collection", skipped.Error);
+        Assert.DoesNotContain(Controller.ListDevices(rescan: false), d => d.Key.StartsWith("C53F", StringComparison.Ordinal));
+    }
+
+    /// <summary>Enumerates a short-only device first, then the fake source's devices.</summary>
+    private sealed class ShortOnlyFirstSource(Core.Hid.HidDevice shortOnly, FakeHidDeviceSource rest) : Core.Hid.IHidDeviceSource
+    {
+        public bool OpenedShortOnly { get; private set; }
+
+        public IReadOnlyList<Core.Hid.HidDevice> Enumerate() => [shortOnly, .. rest.Enumerate()];
+
+        public Core.Hid.IHidTransport Open(Core.Hid.HidDevice device)
+        {
+            if (device == shortOnly)
+            {
+                OpenedShortOnly = true;
+                return new FakeHidTransport(); // answers nothing: every probe would time out
+            }
+            return rest.Open(device);
+        }
+    }
+
+    [Fact]
+    public void Calls_after_cancel_throw_without_device_io()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => Controller.GetState());
+        Assert.Empty(_source.Opened);
+        Controller.Dispose(); // still fine
+    }
+
+    [Fact]
     public void Controller_passes_its_log_to_the_HID_client()
     {
         AddReceiverWithMouseAt(0x01);
