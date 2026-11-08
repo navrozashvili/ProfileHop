@@ -126,6 +126,39 @@ public class ProfileSectorFormat08Tests
     }
 
     [Theory]
+    [InlineData(0x0001, "400")]
+    [InlineData(0x0004, "1600")]
+    [InlineData(0x0005, "3200")]
+    [InlineData(0x0101, null)]
+    public void Name_reads_the_utf16_name_field_of_format08(ushort sector, string? expected)
+    {
+        byte[] field = Real(sector).AsSpan(ProfileSector.NameOffset, ProfileSector.NameLength).ToArray();
+
+        Assert.Equal(expected, ProfileSector.Name(0x08, field));
+    }
+
+    [Fact]
+    public void Name_for_libratbag_formats_is_the_raw_nul_terminated_field_and_all_FF_is_none()
+    {
+        var field = new byte[ProfileSector.NameLength];
+        Array.Fill(field, (byte)0xFF);
+        Assert.Null(ProfileSector.Name(3, field));
+
+        Array.Clear(field);
+        "Desk"u8.CopyTo(field);
+        Assert.Equal("Desk", ProfileSector.Name(3, field));
+
+        Assert.Null(ProfileSector.Name(6, field)); // unknown format: no name
+    }
+
+    [Fact]
+    public void Name_field_sits_at_0xA0_and_is_48_bytes_like_libratbag()
+    {
+        Assert.Equal(0xA0, ProfileSector.NameOffset);
+        Assert.Equal(48, ProfileSector.NameLength);
+    }
+
+    [Theory]
     [InlineData(1, 13)]
     [InlineData(5, 13)]
     [InlineData(0x08, 29)]

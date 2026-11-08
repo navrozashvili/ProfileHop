@@ -74,9 +74,34 @@ public static class ProfileSector
     private const int Format08HeadLength = Format08EntriesOffset + Format08EntrySize * OnboardProfilesFeature.DpiSlotCount; // 29
     private const int Format08HitsOffset = 0x26;
     private const int Format08HitsLength = 6;
-    private const int Format08NameOffset = 0xA0;
 
     public static bool IsInferredFormat08(byte format) => format == Format08;
+
+    /// <summary>Profile name field: libratbag <c>name</c> at 0xA0, 48 bytes (<c>char txt[16 * 3]</c> in union
+    /// hidpp20_internal_profile). Format 0x08 stores a UTF-16LE name at the same offset (device dumps).</summary>
+    public const int NameOffset = 0xA0;
+    public const int NameLength = 48;
+
+    /// <summary>
+    /// Profile name from the <see cref="NameLength"/>-byte field at <see cref="NameOffset"/>, or null when there is none.
+    /// Format 0x08 (inferred): UTF-16LE up to NUL or 0xFFFF. Formats 1..5: like libratbag
+    /// (<c>hidpp20_onboard_profiles_parse_profile</c>) a raw byte string up to NUL with the last byte forced NUL, all
+    /// 0xFF = default (no) name; decoded as UTF-8. Other formats: null.
+    /// </summary>
+    public static string? Name(byte format, ReadOnlySpan<byte> field)
+    {
+        if (field.Length > NameLength)
+            field = field[..NameLength];
+        if (IsInferredFormat08(format))
+            return Utf16Name(field);
+        if (!CanDecode(format) || field.IsEmpty || !field.ContainsAnyExcept((byte)0xFF))
+            return null;
+        ReadOnlySpan<byte> text = field[..^1];
+        int nul = text.IndexOf((byte)0);
+        if (nul >= 0)
+            text = text[..nul];
+        return text.IsEmpty ? null : System.Text.Encoding.UTF8.GetString(text);
+    }
 
     /// <summary>
     /// Bytes at the start of a profile sector needed to read its five DPI values for <paramref name="format"/>
@@ -125,16 +150,16 @@ public static class ProfileSector
         byte[] hits = sector.Slice(Format08HitsOffset, Format08HitsLength).ToArray();
         ushort stored = (ushort)((sector[^2] << 8) | sector[^1]);
         return new Format08Profile(sector[0], sector[1], sector[2], sector[3], x, y, flags, hits,
-            Utf16Name(sector, Format08NameOffset), stored, CrcCcitt(sector[..^2]));
+            sector.Length > NameOffset + 2 ? Name(Format08, sector[NameOffset..^2]) : null, stored, CrcCcitt(sector[..^2]));
     }
 
-    private static string? Utf16Name(ReadOnlySpan<byte> sector, int offset)
+    private static string? Utf16Name(ReadOnlySpan<byte> field)
     {
         var name = new System.Text.StringBuilder();
-        for (int at = offset; at + 1 < sector.Length - 2; at += 2)
+        for (int at = 0; at + 1 < field.Length; at += 2)
         {
-            char c = (char)(sector[at] | (sector[at + 1] << 8));
-            if (c is '\0' or '￿')
+            char c = (char)(field[at] | (field[at + 1] << 8));
+            if (c is '\0' or '\uFFFF')
                 break;
             name.Append(c);
         }

@@ -673,6 +673,83 @@ public sealed class MouseControllerTests : IDisposable
         Assert.DoesNotContain(_mouse.Calls, c => c.Function is 6 or 7 or 8);
     }
 
+    // ---- profile names ----
+
+    private int ProfileSectorReads() =>
+        _mouse.Calls.Count(c => c.Function == 5 && (c.Params[0] << 8 | c.Params[1]) is >= 1 and <= 0xFF);
+
+    [Fact]
+    public void GetState_reads_format08_names_of_enabled_profiles()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (2, true), (3, true), (4, true), (5, true));
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(new Dictionary<int, string> { [1] = "400", [2] = "600", [3] = "800", [4] = "1600", [5] = "3200" }, s.ProfileNames);
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function is 6 or 7 or 8);
+    }
+
+    [Fact]
+    public void Profile_names_are_cached_per_connection()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (5, true));
+
+        Controller.GetState();
+        int reads = ProfileSectorReads();
+        ProfileState switched = Controller.SetProfile(5);
+        Controller.NextDpiSlot(); // reads the DPI chunks of sector 5 only
+        Controller.GetState();
+
+        Assert.Equal("3200", switched.ProfileNames[5]);
+        Assert.Equal(reads + 2, ProfileSectorReads());
+
+        Controller.MarkStale();
+        Controller.GetState();
+        Assert.True(ProfileSectorReads() > reads + 2); // new connection reads them again
+    }
+
+    [Fact]
+    public void Unreadable_profile_sector_just_has_no_name()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (4, true));
+        _mouse.Sectors.Remove(0x0004);
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(new Dictionary<int, string> { [1] = "400" }, s.ProfileNames);
+        Assert.Equal([1, 4], s.EnabledProfiles);
+    }
+
+    [Fact]
+    public void With_fewer_than_two_enabled_profiles_names_of_all_described_profiles_are_read()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0); // ProfileCount 5
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true));
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(["400", "600", "800", "1600", "3200"], s.ProfileNames.OrderBy(kv => kv.Key).Select(kv => kv.Value));
+    }
+
+    [Fact]
+    public void Unknown_profile_format_reads_no_names()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.ProfileFormat = 0x09;
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Empty(s.ProfileNames);
+        Assert.Equal(0, ProfileSectorReads());
+    }
+
     [Fact]
     public void NextDpiSlot_unknown_format_cycles_all_five_slots()
     {
