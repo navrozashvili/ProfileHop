@@ -6,23 +6,51 @@ namespace ProfileHop.Core.Tests.Config;
 public class ConfigStoreTests
 {
     [Fact]
-    public void Defaults_match_plan()
+    public void Defaults_take_names_from_the_mouse_and_jump_to_profiles_1_to_5()
     {
         var c = new AppConfig();
-        Assert.Equal([new ProfileName(1, "Normal"), new ProfileName(2, "Game")], c.Profiles);
+        Assert.Empty(c.Profiles); // names come from the mouse; config entries only override
         Assert.Null(c.Cycle);
         Assert.Equal(
             [
                 new HotkeyBinding("Ctrl+Alt+F9", "next-profile"),
-                new HotkeyBinding("Ctrl+Alt+F10", "profile 1"),
-                new HotkeyBinding("Ctrl+Alt+F11", "profile 2"),
-                new HotkeyBinding("Ctrl+Alt+F12", "next-dpi-slot"),
+                new HotkeyBinding("Ctrl+Alt+1", "profile 1"),
+                new HotkeyBinding("Ctrl+Alt+2", "profile 2"),
+                new HotkeyBinding("Ctrl+Alt+3", "profile 3"),
+                new HotkeyBinding("Ctrl+Alt+4", "profile 4"),
+                new HotkeyBinding("Ctrl+Alt+5", "profile 5"),
+                new HotkeyBinding("", "next-dpi-slot"), // disabled by default
             ],
             c.Hotkeys);
+        Assert.Empty(HotkeyPlan.Build(c.Hotkeys).Errors);
         Assert.False(c.ForceOnboardMode);
         Assert.False(c.Sound);
         Assert.False(c.Balloon);
         Assert.Equal(LogLevel.Info, c.LogLevel);
+    }
+
+    [Fact]
+    public void Old_config_with_the_former_default_names_and_hotkeys_is_kept_as_is()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("config.json");
+        File.WriteAllText(path, """
+            {
+              "profiles": [ { "number": 1, "name": "Normal" }, { "number": 2, "name": "Game" } ],
+              "hotkeys": [
+                { "keys": "Ctrl+Alt+F9", "action": "next-profile" },
+                { "keys": "Ctrl+Alt+F10", "action": "profile 1" },
+                { "keys": "Ctrl+Alt+F11", "action": "profile 2" },
+                { "keys": "Ctrl+Alt+F12", "action": "next-dpi-slot" }
+              ]
+            }
+            """);
+
+        var c = ConfigStore.Load(path).Config;
+
+        Assert.Equal([new ProfileName(1, "Normal"), new ProfileName(2, "Game")], c.Profiles);
+        Assert.Equal(4, c.Hotkeys.Count);
+        Assert.Equal(new HotkeyBinding("Ctrl+Alt+F12", "next-dpi-slot"), c.Hotkeys[3]);
     }
 
     [Fact]

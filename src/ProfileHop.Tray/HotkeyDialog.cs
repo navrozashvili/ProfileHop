@@ -15,6 +15,9 @@ internal interface IHotkeyDialogHost
 {
     AppConfig Config { get; }
 
+    /// <summary>Last state the mouse reported (profile list and names), or null before it was reachable.</summary>
+    ProfileHop.Core.ProfileState? LastState { get; }
+
     /// <summary>Called before the dialog shows: the host releases its global hotkeys so the boxes can capture them.</summary>
     void Opening();
 
@@ -62,7 +65,7 @@ internal sealed unsafe class HotkeyDialog
     {
         _host = host;
         _config = host.Config;
-        _baseline = HotkeyEditor.Rows(_config);
+        _baseline = HotkeyEditor.Rows(_config, host.LastState);
     }
 
     public static HotkeyDialog? Current { get; private set; }
@@ -156,7 +159,8 @@ internal sealed unsafe class HotkeyDialog
 
         for (var i = 0; i < _baseline.Count; i++)
         {
-            AddChild("STATIC", _baseline[i].Label, SsLeft | SsCenterImage, S(margin), S(y), S(labelW), S(rowH), 0, tabStop: false);
+            var label = AddChild("STATIC", _baseline[i].Label, SsLeft | SsCenterImage, S(margin), S(y), S(labelW), S(rowH), 0, tabStop: false);
+            if (!_baseline[i].OnMouse) PInvoke.EnableWindow(label, false); // greyed: binding kept, profile not on the mouse
             var box = AddChild("msctls_hotkey32", null, 0, S(margin + labelW + gap), S(y), S(boxW), S(rowH), IdHotkeyBase + i, tabStop: true,
                 WINDOW_EX_STYLE.WS_EX_CLIENTEDGE);
             PInvoke.SendMessage(box, HkmSetRules, HkcombNone | HkcombS, (nint)(HotkeyfControl | HotkeyfAlt));
@@ -263,7 +267,7 @@ internal sealed unsafe class HotkeyDialog
                 Close(saved: false);
                 break;
             case IdReset:
-                LoadRows(HotkeyEditor.DefaultRows(_config));
+                LoadRows(HotkeyEditor.DefaultRows(_config, _host.LastState));
                 break;
             case >= IdClearBase when id - IdClearBase < _boxes.Count:
                 PInvoke.SendMessage(_boxes[id - IdClearBase], HkmSetHotkey, 0, 0);

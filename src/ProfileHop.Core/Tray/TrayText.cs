@@ -19,29 +19,9 @@ public static class TrayText
         return text.Length <= MaxTooltipLength ? text : string.Concat(text.AsSpan(0, MaxTooltipLength - 1), "…");
     }
 
-    public static string? NameOf(int profile, IReadOnlyList<ProfileName> names)
-    {
-        foreach (var n in names)
-        {
-            if (n.Number == profile && !string.IsNullOrWhiteSpace(n.Name)) return n.Name;
-        }
-        return null;
-    }
-
-    /// <summary>Menu item text for a profile; '&amp;' is doubled so it is not taken as a mnemonic.</summary>
-    public static string MenuLabel(int profile, IReadOnlyList<ProfileName> names) =>
-        $"{profile}  {Escape(NameOf(profile, names) ?? $"Profile {profile}")}";
-
-    /// <summary>Profiles listed in the menu: the device's enabled profiles plus configured names, ascending.</summary>
-    public static IReadOnlyList<int> MenuProfiles(IReadOnlyList<int>? enabled, IReadOnlyList<ProfileName> names)
-    {
-        var set = new SortedSet<int>(enabled ?? []);
-        foreach (var n in names)
-        {
-            if (n.Number > 0) set.Add(n.Number);
-        }
-        return [.. set];
-    }
+    /// <summary>Menu item text for a profile (<see cref="ProfileDisplay.Label"/>); '&amp;' is doubled so it is not taken as a mnemonic.</summary>
+    public static string MenuLabel(int profile, IReadOnlyList<ProfileName> names, IReadOnlyDictionary<int, string>? mouseNames = null) =>
+        $"{profile}  {Escape(ProfileDisplay.Label(profile, names, mouseNames))}";
 
     public static string IconGlyph(WorkerStatus status) => status.Kind switch
     {
@@ -77,7 +57,7 @@ public static class TrayText
     {
         if (state.OnboardMode == 2) return "ProfileHop: mouse in host mode (close G HUB)";
         var p = state.CurrentProfile;
-        var name = NameOf(p, names);
+        var name = ProfileDisplay.NameOf(p, names, state.ProfileNames);
         var text = name is null ? $"ProfileHop: profile {p}" : $"ProfileHop: {name} (profile {p})";
         return state.PreferredDeviceMissing ? text + ", chosen device not found" : text;
     }
