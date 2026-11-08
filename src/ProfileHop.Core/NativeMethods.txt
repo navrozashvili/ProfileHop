@@ -12,3 +12,12 @@ SetupDiGetDeviceInterfaceDetail
 SetupDiDestroyDeviceInfoList
 CreateFile
 HIDP_STATUS_SUCCESS
+// HID transport (milestone 2)
+CancelIoEx
+CloseHandle
+CreateEvent
+GetOverlappedResult
+HidD_SetOutputReport
+ReadFile
+WaitForSingleObject
+WriteFile
