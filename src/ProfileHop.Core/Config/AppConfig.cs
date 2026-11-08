@@ -11,7 +11,10 @@ public sealed class AppConfig
 {
     public List<ProfileName> Profiles { get; set; } = DefaultProfiles();
 
-    /// <summary>Explicit cycle order for "next profile"; null or empty = the mouse's enabled profiles.</summary>
+    /// <summary>
+    /// Explicit cycle order for "next profile"; null or empty = the mouse's enabled profiles, or the numbers in
+    /// <see cref="Profiles"/> when the mouse reports fewer than two enabled profiles.
+    /// </summary>
     public List<int>? Cycle { get; set; }
 
     /// <summary>Remove an entry (or give it empty keys) to disable it; an empty list disables all hotkeys.</summary>

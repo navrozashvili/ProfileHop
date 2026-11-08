@@ -34,8 +34,10 @@ public sealed class ProfileWorker : IDisposable
     // Worker-thread state.
     private ProfileState? _lastState;
     private int? _attemptedProfile;
+    private bool _loggedConfiguredFallback;
     private volatile WorkerStatus _status = WorkerStatus.Starting;
     private volatile IReadOnlyList<int>? _cycleOverride;
+    private volatile IReadOnlyList<int>? _configuredProfiles;
 
     public ProfileWorker(IProfileSwitcher switcher, ILog? log = null)
     {
@@ -64,6 +66,13 @@ public sealed class ProfileWorker : IDisposable
     {
         get => _cycleOverride;
         set => _cycleOverride = value;
+    }
+
+    /// <summary>Profile numbers named in config (<c>profiles</c>). Settable on config reload.</summary>
+    public IReadOnlyList<int>? ConfiguredProfiles
+    {
+        get => _configuredProfiles;
+        set => _configuredProfiles = value;
     }
 
     public void Start()
@@ -244,8 +253,17 @@ public sealed class ProfileWorker : IDisposable
             var needsState = target is null || (nextCount > 0 && overrideList is not { Count: > 0 });
             var known = needsState ? _lastState ?? _switcher.GetState() : _lastState;
             var profile = target ?? known!.CurrentProfile;
-            for (var i = 0; i < nextCount; i++)
-                profile = ProfileCycle.Next(profile, known?.EnabledProfiles ?? [], overrideList);
+            if (nextCount > 0)
+            {
+                var (candidates, fallback) = ProfileCycle.Candidates(known?.EnabledProfiles ?? [], overrideList, _configuredProfiles);
+                if (fallback && !_loggedConfiguredFallback)
+                {
+                    _loggedConfiguredFallback = true;
+                    _log?.Write(LogLevel.Info, $"Mouse reports fewer than two enabled profiles; \"next\" cycles the configured profiles ({string.Join(", ", candidates)}).");
+                }
+                for (var i = 0; i < nextCount; i++)
+                    profile = ProfileCycle.Next(profile, candidates, null);
+            }
 
             _log?.Write(LogLevel.Info, $"Switching to profile {profile}.");
             _attemptedProfile = profile;
