@@ -1,0 +1,179 @@
+using ProfileHop.Core.Hid;
+
+namespace ProfileHop.Core.Hidpp;
+
+/// <summary>
+/// HID++ 2.0 request/response over an <see cref="IHidTransport"/>. One request in flight at a time; a background
+/// pump reads every input report and either completes the pending request, raises <see cref="Notification"/>
+/// (swId 0), or drops the report. Does not own the transport.
+/// </summary>
+public sealed class HidppClient : IDisposable
+{
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(500);
+
+    private readonly IHidTransport _transport;
+    private readonly TimeSpan _timeout;
+    private readonly TimeProvider _time;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Lock _requestLock = new();
+    private readonly Lock _pendingLock = new();
+    private readonly Task _pump;
+    private Pending? _pending;
+    private volatile bool _closed;
+
+    public HidppClient(IHidTransport transport, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
+    {
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _timeout = timeout ?? DefaultTimeout;
+        _time = timeProvider ?? TimeProvider.System;
+        _pump = Task.Run(PumpAsync);
+    }
+
+    /// <summary>Raised on the pump thread for every swId-0 frame. Handlers must not call <see cref="Request"/> synchronously.</summary>
+    public event Action<HidppMessage>? Notification;
+
+    /// <summary>True once the transport's report stream has ended (device gone) or the client was disposed.</summary>
+    public bool IsClosed => _closed;
+
+    /// <summary>
+    /// Sends a long report and waits for the matching reply (same device index, feature index and byte 3).
+    /// Times out after the configured timeout, retries once. Returns the 16 reply parameter bytes.
+    /// </summary>
+    /// <exception cref="HidppException">HID++ 2.0 error reply.</exception>
+    /// <exception cref="DeviceUnreachableException">HID++ 1.0 error reply (0x8F).</exception>
+    /// <exception cref="TimeoutException">No reply after the retry.</exception>
+    /// <exception cref="IOException">Transport closed.</exception>
+    public byte[] Request(byte deviceIndex, byte featureIndex, byte function, ReadOnlySpan<byte> parameters)
+    {
+        byte[] frame = HidppMessage.EncodeLong(deviceIndex, featureIndex, function, HidppMessage.SoftwareId, parameters);
+
+        lock (_requestLock)
+        {
+            const int attempts = 2;
+            for (int attempt = 1; ; attempt++)
+            {
+                ThrowIfClosed();
+                var pending = new Pending(deviceIndex, featureIndex, frame[3]);
+                lock (_pendingLock) _pending = pending;
+                try
+                {
+                    _transport.Write(frame);
+                    return pending.Completion.Task.WaitAsync(_timeout, _time).GetAwaiter().GetResult().Params;
+                }
+                catch (TimeoutException) when (attempt < attempts)
+                {
+                    // retry
+                }
+                catch (TimeoutException)
+                {
+                    throw new TimeoutException(
+                        $"No HID++ reply from device 0x{deviceIndex:X2}, feature index 0x{featureIndex:X2}, function {function} after {attempts} attempts");
+                }
+                finally
+                {
+                    lock (_pendingLock)
+                    {
+                        if (ReferenceEquals(_pending, pending))
+                            _pending = null;
+                    }
+                }
+            }
+        }
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (_closed)
+            throw new IOException("HID++ transport is closed");
+    }
+
+    private async Task PumpAsync()
+    {
+        try
+        {
+            await foreach (byte[] report in _transport.Reports.ReadAllAsync(_cts.Token).ConfigureAwait(false))
+                Dispatch(report);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // Reader faulted: treat like a closed transport.
+        }
+        finally
+        {
+            _closed = true;
+            Pending? pending;
+            lock (_pendingLock) pending = _pending;
+            pending?.Completion.TrySetException(new IOException("HID++ transport closed while waiting for a reply"));
+        }
+    }
+
+    private void Dispatch(byte[] report)
+    {
+        if (!HidppMessage.TryDecode(report, out HidppMessage msg))
+            return;
+
+        lock (_pendingLock)
+        {
+            if (_pending is { } p && msg.DeviceIndex == p.DeviceIndex)
+            {
+                if (msg.FeatureIndex == p.FeatureIndex && msg.FunctionByte == p.FunctionByte)
+                {
+                    p.Completion.TrySetResult(msg);
+                    return;
+                }
+
+                // Error frames: [dev, marker, orig feature index, orig byte 3, code]
+                if ((msg.IsHidpp20Error || msg.IsHidpp10Error)
+                    && msg.FunctionByte == p.FeatureIndex && msg.Params[0] == p.FunctionByte)
+                {
+                    byte code = msg.Params[1];
+                    Exception ex = msg.IsHidpp20Error
+                        ? new HidppException((HidppError)code, p.DeviceIndex, p.FeatureIndex, (byte)(p.FunctionByte >> 4))
+                        : new DeviceUnreachableException(p.DeviceIndex, code);
+                    p.Completion.TrySetException(ex);
+                    return;
+                }
+            }
+        }
+
+        if (msg.IsNotification)
+        {
+            try
+            {
+                Notification?.Invoke(msg);
+            }
+            catch (Exception)
+            {
+                // A faulty handler must not kill the pump.
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_cts.IsCancellationRequested)
+            return;
+        _cts.Cancel();
+        try
+        {
+            _pump.Wait(TimeSpan.FromSeconds(1));
+        }
+        catch (AggregateException)
+        {
+        }
+        _closed = true;
+        _cts.Dispose();
+    }
+
+    private sealed class Pending(byte deviceIndex, byte featureIndex, byte functionByte)
+    {
+        public byte DeviceIndex { get; } = deviceIndex;
+        public byte FeatureIndex { get; } = featureIndex;
+        public byte FunctionByte { get; } = functionByte;
+        public TaskCompletionSource<HidppMessage> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+}
