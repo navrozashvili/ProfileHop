@@ -32,7 +32,19 @@ public sealed class AppConfig
     /// <summary>Which device to control (key chosen from the tray's Device menu); null = automatic.</summary>
     public string? Device { get; set; }
 
-    private const uint VkF8 = 0x77;
+    /// <summary>Profile to switch to when no app in <see cref="AppProfiles"/> is in the foreground; null = leave as is.</summary>
+    public int? DefaultProfile { get; set; }
+
+    /// <summary>Per-app profiles: lower-cased full exe path → profile number (1-based).</summary>
+    public Dictionary<string, int> AppProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Switch profiles automatically when the foreground app changes.</summary>
+    public bool AutoSwitch { get; set; } = true;
+
+    /// <summary>Show a notification after an automatic switch.</summary>
+    public bool SwitchNotification { get; set; } = true;
+
+    private const uint VkF8= 0x77;
     private const uint VkF9 = 0x78;
     private const int DefaultProfileCount = 5;
 

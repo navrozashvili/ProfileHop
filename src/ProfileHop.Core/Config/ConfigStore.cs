@@ -132,6 +132,25 @@ public static class ConfigStore
             }
         }
 
+        if (config.DefaultProfile is < 1)
+        {
+            errors.Add($"defaultProfile {config.DefaultProfile} is invalid (profiles start at 1); ignored.");
+            config.DefaultProfile = null;
+        }
+
+        var apps = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, profile) in config.AppProfiles ?? [])
+        {
+            var key = path?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(key))
+                errors.Add($"appProfiles has a blank path (profile {profile}); ignored.");
+            else if (profile < 1)
+                errors.Add($"appProfiles: {key} maps to profile {profile}, which is invalid (profiles start at 1); ignored.");
+            else
+                apps[key] = profile; // paths that differ only in case collapse; the last one wins
+        }
+        config.AppProfiles = apps;
+
         config.Hotkeys = config.Hotkeys.Where(h => h is not null).ToList();
     }
 }
