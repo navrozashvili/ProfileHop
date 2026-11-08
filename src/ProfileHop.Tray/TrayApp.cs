@@ -578,6 +578,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;
         _worker.CycleOverride = _config.Cycle;
+        _worker.ConfiguredProfiles = [.. _config.Profiles.Select(p => p.Number)];
         if (!string.Equals(oldDevice, _config.Device, StringComparison.OrdinalIgnoreCase) || oldForce != _config.ForceOnboardMode)
             _worker.Reconfigure(_config.Device, _config.ForceOnboardMode);
         var problems = new List<string>(loaded.Errors);

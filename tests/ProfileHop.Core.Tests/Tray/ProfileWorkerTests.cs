@@ -229,6 +229,25 @@ public class ProfileWorkerTests
     }
 
     [Fact]
+    public void Next_with_one_enabled_profile_cycles_configured_profiles_and_logs_once()
+    {
+        var log = new ListLog();
+        var mouse = new FakeSwitcher { Enabled = [1] }; // real mouse: "enabled profiles: 1"
+        var worker = new ProfileWorker(mouse, log) { ConfiguredProfiles = [1, 2] };
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2", "set 1"], mouse.Calls);
+        Assert.Single(log.Lines, l => l.Message.Contains("configured profiles", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Status_reports_confirmed_profile_not_requested_one()
     {
         var (worker, mouse, statuses) = Create();
