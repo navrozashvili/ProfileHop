@@ -10,7 +10,7 @@ namespace ProfileHop.Core.Hid;
 
 /// <summary>
 /// Overlapped read/write pipe over every HID++ collection of one device. One background reader thread per
-/// opened collection feeds <see cref="Reports"/>; writes go to the long collection (usage 2) when present.
+/// opened collection feeds <see cref="Reports"/>; writes go to the long collection (usage 2), which must open.
 /// </summary>
 internal sealed unsafe class HidChannel : IHidTransport
 {
@@ -63,7 +63,7 @@ internal sealed unsafe class HidChannel : IHidTransport
                 c.Handle.Dispose();
             }
 
-            string reason = target < 0 ? "no writable HID++ collection could be opened" : "CreateEvent failed";
+            string reason = target < 0 ? "the long HID++ collection could not be opened" : "CreateEvent failed";
             throw new IOException($"Cannot open {device.DeviceKey}: {reason}. {string.Join("; ", errors)}");
         }
 
