@@ -84,7 +84,7 @@ internal static class ProfilesCommand
     {
         Console.WriteLine("getProfilesDescription:");
         Console.WriteLine($"  Memory model:        0x{d.MemoryModel:X2}{(d.MemoryModel == 1 ? " (G402, the only one libratbag/Solaar accept)" : " (unknown to libratbag/Solaar)")}");
-        Console.WriteLine($"  Profile format:      0x{d.ProfileFormat:X2} ({ProfileSector.FormatName(d.ProfileFormat) ?? "unknown to libratbag/Solaar"})");
+        Console.WriteLine($"  Profile format:      0x{d.ProfileFormat:X2} ({ProfileSector.FormatName(d.ProfileFormat) ?? (ProfileSector.IsInferredFormat08(d.ProfileFormat) ? "unknown to libratbag/Solaar; ProfileHop uses an inferred layout" : "unknown to libratbag/Solaar")})");
         Console.WriteLine($"  Macro format:        0x{d.MacroFormat:X2}");
         Console.WriteLine($"  Profile count:       {d.ProfileCount}");
         Console.WriteLine($"  ROM profile count:   {d.ProfileCountOob}");
@@ -113,9 +113,23 @@ internal static class ProfilesCommand
             Console.WriteLine($"  DPI list (LE16 x5):  {string.Join(", ", p.Dpi.Select((v, i) => $"[{i}] {(v == 0 ? "off" : v.ToString())}"))}");
             Console.WriteLine($"  CRC:                 stored 0x{p.StoredCrc:X4}, computed 0x{p.ComputedCrc:X4} -> {(p.CrcValid ? "valid" : "INVALID")}");
         }
+        else if (ProfileSector.IsInferredFormat08(d.ProfileFormat) && ProfileSector.DecodeFormat08(data) is { } q)
+        {
+            Console.WriteLine("  Layout: profile format 0x08, INFERRED LAYOUT (from PRO X2 SUPERSTRIKE dumps, not libratbag/Solaar)");
+            Console.WriteLine($"  Name (0xA0 UTF-16):  {(q.Name is null ? "(none)" : $"\"{q.Name}\"")}");
+            Console.WriteLine($"  Byte 0 (rate code?): 0x{q.ReportRateCode:X2} (mapping unknown, not interpreted)");
+            Console.WriteLine($"  Byte 1 (unknown):    0x{q.Byte1:X2}");
+            Console.WriteLine($"  Default DPI index:   {q.DefaultDpiIndex} (byte 2)");
+            Console.WriteLine($"  Shift DPI index:     {q.ShiftDpiIndex} (byte 3)");
+            Console.WriteLine($"  DPI entries (4..28, [X LE16, Y LE16, flag]):");
+            for (int i = 0; i < q.Dpi.Count; i++)
+                Console.WriteLine($"    [{i}] {(q.Dpi[i] == 0 ? "off" : $"X {q.Dpi[i]}, Y {q.DpiY[i]}")}, flag 0x{q.DpiFlags[i]:X2}");
+            Console.WriteLine($"  HITS candidate (0x26..0x2B, raw): {Convert.ToHexString([.. q.HitsCandidate])}");
+            Console.WriteLine($"  CRC:                 stored 0x{q.StoredCrc:X4}, computed 0x{q.ComputedCrc:X4} -> {(q.CrcValid ? "valid" : "INVALID")}");
+        }
         else
         {
-            Console.WriteLine($"  Profile format 0x{d.ProfileFormat:X2} is not one libratbag/Solaar decode (1-5); raw only.");
+            Console.WriteLine($"  Profile format 0x{d.ProfileFormat:X2} is not one libratbag/Solaar decode (1-5) nor the inferred 0x08; raw only.");
             Console.WriteLine($"  CRC: {(ProfileSector.HasValidCrc(data) ? "valid" : "INVALID")}");
             if (!raw)
                 Dump(data);

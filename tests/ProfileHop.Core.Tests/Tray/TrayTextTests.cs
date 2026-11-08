@@ -15,6 +15,23 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void Tooltip_uses_the_name_stored_on_the_mouse()
+    {
+        var state = new ProfileState(1, 5, [1, 5], 4) { ProfileNames = new Dictionary<int, string> { [5] = "3200" } };
+        Assert.Equal("ProfileHop: 3200 (profile 5)", TrayText.Tooltip(WorkerStatus.Reachable(state), []));
+        Assert.Equal("ProfileHop: Aim (profile 5)", TrayText.Tooltip(WorkerStatus.Reachable(state), [new(5, "Aim")]));
+    }
+
+    [Fact]
+    public void Menu_label_uses_config_then_mouse_name()
+    {
+        var mouse = new Dictionary<int, string> { [2] = "600", [5] = "3200" };
+        Assert.Equal("2  Game", TrayText.MenuLabel(2, Names, mouse));
+        Assert.Equal("5  3200", TrayText.MenuLabel(5, Names, mouse));
+        Assert.Equal("4  Profile 4", TrayText.MenuLabel(4, Names, mouse));
+    }
+
+    [Fact]
     public void Unnamed_profile()
     {
         var status = WorkerStatus.Reachable(new ProfileState(1, 4, [1, 2, 4], null));
@@ -115,13 +132,5 @@ public class TrayTextTests
         Assert.Equal("2", TrayText.IconGlyph(WorkerStatus.Reachable(new ProfileState(1, 2, [1, 2], null))));
         Assert.Equal("?", TrayText.IconGlyph(WorkerStatus.Unreachable("x")));
         Assert.Equal("…", TrayText.IconGlyph(WorkerStatus.Starting));
-    }
-
-    [Fact]
-    public void Menu_profiles_union_config_and_device()
-    {
-        // Device-enabled profiles first, then configured names not reported by the device; sorted, distinct.
-        Assert.Equal([1, 2, 3], TrayText.MenuProfiles([1, 3], Names));
-        Assert.Equal([1, 2], TrayText.MenuProfiles(null, Names));
     }
 }

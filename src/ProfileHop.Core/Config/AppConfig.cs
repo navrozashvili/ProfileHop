@@ -12,8 +12,8 @@ public sealed class AppConfig
     public List<ProfileName> Profiles { get; set; } = DefaultProfiles();
 
     /// <summary>
-    /// Explicit cycle order for "next profile"; null or empty = the mouse's enabled profiles, or the numbers in
-    /// <see cref="Profiles"/> when the mouse reports fewer than two enabled profiles.
+    /// Explicit cycle order for "next profile"; null or empty = the mouse's enabled profiles, or the configured numbers
+    /// (<see cref="Profiles"/> plus "profile N" hotkeys) when the mouse reports fewer than two enabled profiles.
     /// </summary>
     public List<int>? Cycle { get; set; }
 
@@ -32,13 +32,29 @@ public sealed class AppConfig
     /// <summary>Which device to control (key chosen from the tray's Device menu); null = automatic.</summary>
     public string? Device { get; set; }
 
-    internal static List<ProfileName> DefaultProfiles() => [new(1, "Normal"), new(2, "Game")];
+    private const uint VkF9 = 0x78;
+    private const int DefaultProfileCount = 5;
 
-    internal static List<HotkeyBinding> DefaultHotkeys() =>
-    [
-        new("Ctrl+Alt+F9", "next-profile"),
-        new("Ctrl+Alt+F10", "profile 1"),
-        new("Ctrl+Alt+F11", "profile 2"),
-        new("Ctrl+Alt+F12", "next-dpi-slot"),
-    ];
+    /// <summary>
+    /// Built-in hotkey for an action: next profile Ctrl+Alt+F9, profile 1–9 Ctrl+Alt+1–9, otherwise none (next DPI slot
+    /// is off by default).
+    /// </summary>
+    public static Hotkey? DefaultHotkey(HotkeyAction action) => action.Kind switch
+    {
+        HotkeyActionKind.NextProfile => new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, VkF9),
+        HotkeyActionKind.Profile when action.Profile is >= 1 and <= 9 =>
+            new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, (uint)('0' + action.Profile)),
+        _ => null,
+    };
+
+    /// <summary>No names by default: the tray shows the names stored on the mouse; entries here override them.</summary>
+    internal static List<ProfileName> DefaultProfiles() => [];
+
+    internal static List<HotkeyBinding> DefaultHotkeys()
+    {
+        List<HotkeyAction> actions = [new(HotkeyActionKind.NextProfile, 0)];
+        for (var p = 1; p <= DefaultProfileCount; p++) actions.Add(new(HotkeyActionKind.Profile, p));
+        actions.Add(new(HotkeyActionKind.NextDpiSlot, 0));
+        return [.. actions.Select(a => new HotkeyBinding(DefaultHotkey(a)?.ToString() ?? "", a.ToString()))];
+    }
 }

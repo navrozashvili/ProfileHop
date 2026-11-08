@@ -218,9 +218,7 @@ public sealed class MouseController : IProfileSwitcher
         bool[]? enabled = null;
         try
         {
-            int profile = c.Onboard.GetCurrentProfile();
-            if (profile is >= 1 and <= 0xFFFF)
-                enabled = EnabledDpiSlots(c.Onboard.MemoryRead((ushort)profile, 0));
+            enabled = EnabledDpiSlots(c);
         }
         catch (HidppException)
         {
@@ -228,7 +226,8 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         byte next = NextSlot(current, enabled);
-        c.Onboard.SetCurrentDpiIndex(next);
+        if (next != current) // a single enabled slot: nothing to switch to
+            c.Onboard.SetCurrentDpiIndex(next);
         return (int)next;
     });
 
@@ -246,13 +245,24 @@ public sealed class MouseController : IProfileSwitcher
         }
     }
 
-    /// <summary>Profile sector bytes 3..12: five LE16 DPI values; 0 = disabled slot (libratbag).</summary>
-    internal static bool[] EnabledDpiSlots(byte[] profileHead)
+    /// <summary>
+    /// Enabled DPI slots (DPI != 0) of the current profile, decoded per the profile format from getProfilesDescription
+    /// (<see cref="ProfileSector.DpiSlots"/>: libratbag layout for 1..5, inferred layout for 0x08). Reads only the
+    /// 16-byte memoryRead chunks covering the DPI list. Null when the format's layout is unknown.
+    /// </summary>
+    private static bool[]? EnabledDpiSlots(Connection c)
     {
-        var enabled = new bool[OnboardProfilesFeature.DpiSlotCount];
-        for (int i = 0; i < enabled.Length; i++)
-            enabled[i] = (profileHead[3 + 2 * i] | (profileHead[4 + 2 * i] << 8)) != 0;
-        return enabled;
+        byte format = c.Description.ProfileFormat;
+        int need = ProfileSector.DpiHeadLength(format);
+        int profile = c.Onboard.GetCurrentProfile();
+        if (need == 0 || profile is < 1 or > 0xFFFF)
+            return null;
+
+        const int chunk = 16;
+        var head = new byte[(need + chunk - 1) / chunk * chunk];
+        for (int offset = 0; offset < head.Length; offset += chunk)
+            c.Onboard.MemoryRead((ushort)profile, (ushort)offset).CopyTo(head, offset);
+        return ProfileSector.DpiSlots(format, head)?.Select(d => d != 0).ToArray();
     }
 
     internal static byte NextSlot(byte current, bool[]? enabled)
@@ -294,7 +304,53 @@ public sealed class MouseController : IProfileSwitcher
             dpi = null;
         }
 
-        return new ProfileState(mode, current, enabled, dpi, c.Info.PreferredDeviceMissing);
+        c.ProfileNames ??= ReadProfileNames(c, enabled);
+        return new ProfileState(mode, current, enabled, dpi, c.Info.PreferredDeviceMissing) { ProfileNames = c.ProfileNames };
+    }
+
+    /// <summary>
+    /// Names stored on the mouse (<see cref="ProfileSector.Name"/>), read once per connection with memoryRead only: the
+    /// 48-byte name field of each enabled profile's sector, plus profiles 1..profile count when the directory lists
+    /// fewer than two (the real mouse does; see ProfileCycle). A profile whose sector can't be read has no name.
+    /// </summary>
+    private static Dictionary<int, string> ReadProfileNames(Connection c, IReadOnlyList<int> enabled)
+    {
+        var names = new Dictionary<int, string>();
+        ProfilesDescription d;
+        try
+        {
+            d = c.Description;
+        }
+        catch (HidppException)
+        {
+            return names;
+        }
+        const int chunk = 16;
+        bool knownLayout = ProfileSector.CanDecode(d.ProfileFormat) || ProfileSector.IsInferredFormat08(d.ProfileFormat);
+        if (!knownLayout || d.SectorSize < ProfileSector.NameOffset + ProfileSector.NameLength)
+            return names;
+
+        var profiles = new SortedSet<int>(enabled);
+        if (enabled.Count < 2)
+            for (int p = 1; p <= d.ProfileCount; p++)
+                profiles.Add(p);
+
+        var field = new byte[ProfileSector.NameLength];
+        foreach (int profile in profiles)
+        {
+            try
+            {
+                for (int offset = 0; offset < field.Length; offset += chunk)
+                    c.Onboard.MemoryRead((ushort)profile, (ushort)(ProfileSector.NameOffset + offset)).AsSpan(0, chunk).CopyTo(field.AsSpan(offset));
+            }
+            catch (HidppException)
+            {
+                continue;
+            }
+            if (ProfileSector.Name(d.ProfileFormat, field) is { } name)
+                names[profile] = name;
+        }
+        return names;
     }
 
     private T Execute<T>(Func<Connection, T> operation)
@@ -610,6 +666,9 @@ public sealed class MouseController : IProfileSwitcher
         public OnboardProfilesFeature Onboard { get; }
         public byte OnboardIndex { get; }
         public ProfilesDescription Description => _description ??= Onboard.GetProfilesDescription();
+
+        /// <summary>Profile names read on the first state read of this connection (null until then).</summary>
+        public IReadOnlyDictionary<int, string>? ProfileNames { get; set; }
 
         public void Dispose() => _opened.Dispose();
     }

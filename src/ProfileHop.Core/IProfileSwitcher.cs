@@ -13,7 +13,13 @@ public sealed record ProfileState(
     int CurrentProfile,
     IReadOnlyList<int> EnabledProfiles,
     int? DpiIndex,
-    bool PreferredDeviceMissing = false);
+    bool PreferredDeviceMissing = false)
+{
+    private static readonly IReadOnlyDictionary<int, string> NoNames = new Dictionary<int, string>();
+
+    /// <summary>Profile number → name stored on the mouse (read once per connection); missing = no name.</summary>
+    public IReadOnlyDictionary<int, string> ProfileNames { get; init; } = NoNames;
+}
 
 /// <summary>A device that qualifies for control (HID++ 2.0+, has OnboardProfiles 0x8100), as seen by the last scan.</summary>
 /// <param name="Key">Stable identity saved as config <c>device</c>; see <see cref="DeviceKey"/>.</param>
