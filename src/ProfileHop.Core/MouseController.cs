@@ -34,6 +34,16 @@ public sealed record ConnectedMouse(
     string Key,
     bool PreferredDeviceMissing);
 
+/// <summary>
+/// The mouse is in host mode (G HUB took over) and forceOnboardMode is off: setCurrentProfile would be accepted but
+/// ignored, so nothing was sent. <see cref="State"/> is the state read just now (current profile 0 in host mode).
+/// </summary>
+public sealed class HostModeException(ProfileState state)
+    : Exception("Mouse is in host mode (G HUB); close G HUB or enable forceOnboardMode")
+{
+    public ProfileState State { get; } = state;
+}
+
 public sealed class MouseNotFoundException(IReadOnlyList<DeviceProbe> probes)
     : Exception($"No HID++ 2.0 device with OnboardProfiles (0x8100) found ({probes.Count} device indexes tried)")
 {
@@ -161,12 +171,32 @@ public sealed class MouseController : IProfileSwitcher
 
     public ProfileState GetState() => Execute(ReadState);
 
+    /// <summary>
+    /// Whole onboard sector (sector size bytes) via memoryRead (function 5, read-only), in 16-byte chunks; like
+    /// libratbag the last chunk is read from <c>sectorSize - 16</c>. For the CLI's <c>status --raw</c>.
+    /// </summary>
+    public byte[] ReadSector(ushort sector) => Execute(c =>
+    {
+        const int chunk = 16;
+        int size = Math.Max((int)c.Description.SectorSize, chunk);
+        var data = new byte[size];
+        for (int offset = 0; offset < size; offset += chunk)
+        {
+            int at = Math.Min(offset, size - chunk);
+            c.Onboard.MemoryRead(sector, (ushort)at).CopyTo(data, at);
+        }
+        return data;
+    });
+
     public ProfileState SetProfile(int profile)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(profile, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(profile, 0xFFFF);
         return Execute(c =>
         {
+            // In host mode the mouse acknowledges setCurrentProfile but ignores it (and reports profile 0).
+            if (ApplyOnboardMode(c) == OnboardModeHost)
+                throw new HostModeException(ReadState(c));
             c.Onboard.SetCurrentProfile(profile);
             int confirmed = c.Onboard.GetCurrentProfile();
             if (confirmed != profile)
@@ -270,13 +300,20 @@ public sealed class MouseController : IProfileSwitcher
             {
                 return operation(c);
             }
-            catch
+            catch (Exception ex) when (IsTransportFailure(ex))
             {
                 CloseConnection();
                 throw;
             }
         }
     }
+
+    /// <summary>
+    /// The link to the mouse is gone or unusable (no reply, transport closed, receiver says the device is not
+    /// reachable). Device rejections (HID++ 2.0 error, unconfirmed reply, host mode) keep the connection.
+    /// </summary>
+    public static bool IsTransportFailure(Exception ex) =>
+        ex is TimeoutException or IOException or DeviceUnreachableException or ObjectDisposedException;
 
     private Connection EnsureConnected(bool fullScan)
     {
@@ -297,18 +334,20 @@ public sealed class MouseController : IProfileSwitcher
         return c;
     }
 
-    private void ApplyOnboardMode(Connection c)
+    /// <summary>Reads the onboard mode; with forceOnboardMode, switches host mode back to onboard. Returns the resulting mode.</summary>
+    private byte ApplyOnboardMode(Connection c)
     {
         byte mode = c.Onboard.GetOnboardMode();
         if (mode != OnboardModeHost)
-            return;
+            return mode;
         if (!_forceOnboardMode)
         {
             _log?.Write(LogLevel.Info, "Mouse is in host mode (G HUB); forceOnboardMode is off, leaving it.");
-            return;
+            return mode;
         }
         c.Onboard.SetOnboardMode(OnboardModeOnboard);
         _log?.Write(LogLevel.Info, "Mouse was in host mode; switched it to onboard mode (forceOnboardMode).");
+        return OnboardModeOnboard;
     }
 
     private void CloseConnection()
@@ -343,7 +382,7 @@ public sealed class MouseController : IProfileSwitcher
                     continue;
                 }
 
-                var client = new HidppClient(transport, _timeout, _time);
+                var client = new HidppClient(transport, _timeout, _time, _log);
                 var opened = new Opened(device, transport, client);
                 open.Add(opened);
                 var found = new List<Candidate>();
@@ -510,9 +549,10 @@ public sealed class MouseController : IProfileSwitcher
             {
                 profile = connection.Onboard.GetCurrentProfile();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                CloseConnection();
+                if (IsTransportFailure(ex))
+                    CloseConnection();
                 return;
             }
         }

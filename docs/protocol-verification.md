@@ -49,7 +49,7 @@ Line numbers below refer to those commits. In libratbag the function is written 
 | Short report | ID 0x10, 7 bytes | `HIDPP_SHORT_MESSAGE_ID = 0x10`, `SHORT_MESSAGE_SIZE = 7` base.py:90, 95 | yes |
 | Long report | ID 0x11, 20 bytes | `HIDPP_LONG_MESSAGE_ID = 0x11`, `_LONG_MESSAGE_SIZE = 20` base.py:91, 96; `pack("!BB18s", 0x11, devnumber, data)` base.py:454 | yes |
 | Byte 3 | `(function << 4) \| swId` | libratbag: "4 MSB: subcommand, 4 LSB: SW identifier" hidpp20.c:129-137; Solaar `(request_id & 0xFFF0) \| sw_id` base.py:696 | yes |
-| Software ID | 0x0B | Solaar `SOLAAR_SOFTWARE_ID = 0x0B` base.py:910 (libratbag uses 0x08, hidpp20.c:131). Any non-zero value works. | yes |
+| Software ID | 0x0B | Solaar `SOLAAR_SOFTWARE_ID = 0x0B` base.py:910 (libratbag uses 0x08, hidpp20.c:131). Any non-zero value works; ProfileHop rotates 0x1..0xF per send so stale replies are dropped. | yes |
 | Notifications | swId 0 | `# HID++ 2.0 feature notifications have the SoftwareID 0` / `address & 0x0F == 0x00` base.py:629-630 | yes |
 | Reply match | same dev index, feature index, byte 3 | libratbag `sub_id == … && address == …` hidpp20.c:174-176 (device index checked by the hidraw node); Solaar `reply_devnumber == devnumber` and `reply_data[:2] == request_data[:2]` base.py:729, 769 | yes |
 | Device indexes | 0x01–0x06 paired, 0xFF wired/receiver | Solaar: receiver requests use devnumber 0xFF (base.py:698), libratbag `device->index` | 0xFF confirmed; the 0x01–0x06 range is from the plan (receiver.py, which enumerates paired slots, was not fetched) |

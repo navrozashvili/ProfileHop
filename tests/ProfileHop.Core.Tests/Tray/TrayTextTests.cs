@@ -41,6 +41,14 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void Host_mode_icon_glyph_is_H_not_profile_0()
+    {
+        Assert.Equal("H", TrayText.IconGlyph(WorkerStatus.Reachable(new ProfileState(2, 0, [1], 4))));
+        Assert.Equal("H", TrayText.IconGlyph(WorkerStatus.Reachable(new ProfileState(1, 0, [1], 4))));
+        Assert.Equal("2", TrayText.IconGlyph(WorkerStatus.Reachable(new ProfileState(1, 2, [1, 2], 4))));
+    }
+
+    [Fact]
     public void Missing_preferred_device_is_flagged()
     {
         var status = WorkerStatus.Reachable(new ProfileState(1, 2, [1, 2], null, PreferredDeviceMissing: true));

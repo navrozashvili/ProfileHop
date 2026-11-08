@@ -50,4 +50,33 @@ public class ProfileCycleTests
     {
         Assert.Equal(1, ProfileCycle.Next(1, [1], cycleOverride: null));
     }
+
+    [Fact]
+    public void Fewer_than_two_enabled_falls_back_to_configured_profiles()
+    {
+        Assert.Equal(2, ProfileCycle.Next(1, [1], cycleOverride: null, configured: [1, 2]));
+        Assert.Equal(1, ProfileCycle.Next(2, [1], cycleOverride: null, configured: [1, 2]));
+        Assert.Equal(1, ProfileCycle.Next(0, [], cycleOverride: null, configured: [1, 2]));
+    }
+
+    [Fact]
+    public void Configured_profiles_are_not_used_with_two_or_more_enabled()
+    {
+        Assert.Equal(3, ProfileCycle.Next(2, [1, 2, 3], cycleOverride: null, configured: [1, 2]));
+    }
+
+    [Fact]
+    public void Override_wins_over_configured_fallback()
+    {
+        Assert.Equal(3, ProfileCycle.Next(1, [1], cycleOverride: [1, 3], configured: [1, 2]));
+    }
+
+    [Fact]
+    public void Candidates_reports_when_the_configured_fallback_is_used()
+    {
+        Assert.True(ProfileCycle.Candidates([1], null, [1, 2]).ConfiguredFallback);
+        Assert.False(ProfileCycle.Candidates([1, 2], null, [1, 2]).ConfiguredFallback);
+        Assert.False(ProfileCycle.Candidates([1], [1, 2], [1, 2]).ConfiguredFallback);
+        Assert.False(ProfileCycle.Candidates([1], null, []).ConfiguredFallback);
+    }
 }

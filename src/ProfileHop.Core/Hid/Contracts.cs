@@ -14,7 +14,7 @@ public sealed record HidCollection(
     int OutputReportLength);
 
 /// <summary>All HID++ collections that belong to one physical device (receiver or wired mouse).</summary>
-/// <param name="DeviceKey">Device path prefix shared by the collections (before <c>&amp;col0x</c>).</param>
+/// <param name="DeviceKey">Path key shared by the collections (see <see cref="HidPaths.DeviceKey"/>).</param>
 public sealed record HidDevice(string DeviceKey, IReadOnlyList<HidCollection> Collections);
 
 /// <summary>A write/read pipe to one HID++ device, covering all of its opened collections.</summary>

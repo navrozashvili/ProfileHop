@@ -11,6 +11,7 @@ public class ProfileWorkerTests
         public int Mode { get; set; } = 1;
         public int Dpi { get; set; }
         public Exception? FailWith { get; set; }
+        public Exception? FailSetWith { get; set; }
         public List<string> Calls { get; } = [];
         public bool Disposed { get; private set; }
         public Func<int, int>? ConfirmedProfile { get; set; }
@@ -34,6 +35,7 @@ public class ProfileWorkerTests
         {
             lock (Calls) Calls.Add($"set {profile}");
             ThrowIfFailing();
+            if (FailSetWith is not null) throw FailSetWith;
             Current = ConfirmedProfile?.Invoke(profile) ?? profile;
             return State;
         }
@@ -227,6 +229,25 @@ public class ProfileWorkerTests
     }
 
     [Fact]
+    public void Next_with_one_enabled_profile_cycles_configured_profiles_and_logs_once()
+    {
+        var log = new ListLog();
+        var mouse = new FakeSwitcher { Enabled = [1] }; // real mouse: "enabled profiles: 1"
+        var worker = new ProfileWorker(mouse, log) { ConfiguredProfiles = [1, 2] };
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2", "set 1"], mouse.Calls);
+        Assert.Single(log.Lines, l => l.Message.Contains("configured profiles", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Status_reports_confirmed_profile_not_requested_one()
     {
         var (worker, mouse, statuses) = Create();
@@ -260,6 +281,56 @@ public class ProfileWorkerTests
     }
 
     [Fact]
+    public void Host_mode_switch_shows_host_mode_status_not_unreachable()
+    {
+        var (worker, mouse, statuses) = Create();
+        var host = new ProfileState(2, 0, [1], 4);
+        mouse.FailWith = new HostModeException(host);
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        var s = Assert.Single(statuses);
+        Assert.Equal(WorkerStatusKind.Reachable, s.Kind);
+        Assert.Same(host, s.State);
+        Assert.Equal("ProfileHop: mouse in host mode (close G HUB)", TrayText.Tooltip(s, []));
+    }
+
+    [Fact]
+    public void Device_rejection_keeps_reachable_status_with_notice()
+    {
+        var log = new ListLog();
+        var mouse = new FakeSwitcher();
+        var worker = new ProfileWorker(mouse, log);
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.FailWith = new Core.Hidpp.HidppException(Core.Hidpp.HidppError.InvalidArgument, 1, 0x0E, 3);
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(WorkerStatusKind.Reachable, worker.Status.Kind);
+        Assert.Equal(1, worker.Status.State!.CurrentProfile);
+        Assert.Equal("Profile 2 rejected by mouse (InvalidArgument)", worker.Status.Notice);
+        Assert.Contains(log.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("rejected"));
+    }
+
+    [Fact]
+    public void Device_rejection_with_unknown_state_reads_state()
+    {
+        var (worker, mouse, _) = Create();
+        mouse.FailSetWith = new Core.Hidpp.HidppProtocolException("not confirmed");
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2", "get"], mouse.Calls);
+        Assert.Equal(WorkerStatusKind.Reachable, worker.Status.Kind);
+        Assert.Equal(1, worker.Status.State!.CurrentProfile);
+        Assert.Equal("Profile 2 not confirmed by mouse", worker.Status.Notice);
+    }
+
+    [Fact]
     public void Next_after_failure_reads_state_again()
     {
         var (worker, mouse, _) = Create();
@@ -279,18 +350,24 @@ public class ProfileWorkerTests
     }
 
     [Fact]
-    public void Device_change_marks_stale_without_touching_the_mouse_when_reachable()
+    public void Device_change_burst_marks_stale_and_reconnects_once_when_reachable()
     {
-        var (worker, mouse, _) = Create();
+        // Reconnecting re-subscribes the profile-change notifications (mouse-button switches); without it the tray
+        // would stop following the mouse after any HID arrival or resume.
+        var (worker, mouse, statuses) = Create();
         worker.RequestRefresh();
         worker.ProcessPending();
         mouse.Calls.Clear();
+        statuses.Clear();
 
+        worker.NotifyDeviceChange();
         worker.NotifyDeviceChange();
         worker.NotifyDeviceChange();
         worker.ProcessPending();
 
-        Assert.Equal(["stale"], mouse.Calls);
+        Assert.Equal(["stale", "get"], mouse.Calls);
+        Assert.True(Assert.Single(statuses).IsReachable);
+        Assert.False(worker.ProcessPending());
     }
 
     [Fact]
@@ -483,7 +560,10 @@ public class ProfileWorkerTests
     {
         public List<(LogLevel Level, string Message)> Lines { get; } = [];
 
-        public bool IsEnabled(LogLevel level) => true;
+        public LogLevel MinLevel { get; set; } = LogLevel.Debug;
+
+        /// <summary>Calls to IsEnabled; Write records every line, even below MinLevel, so tests can catch skipped checks.</summary>
+        public bool IsEnabled(LogLevel level) => level >= MinLevel;
 
         public void Write(LogLevel level, string message)
         {

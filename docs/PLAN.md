@@ -56,7 +56,7 @@ connection stale, reconnect lazily on next hotkey press. Do not poll.
 ## HID++ 2.0 layer
 
 Long report (20 bytes): [0] 0x11, [1] device index, [2] feature index (looked up at runtime), [3] (functionId << 4)
-| swId, [4..19] params zero-padded. Software ID fixed non-zero, 0x0B. swId 0 = unsolicited notification.
+| swId, [4..19] params zero-padded. Software ID rotates 0x1..0xF per send (a late reply to an earlier send cannot complete a newer request). swId 0 = unsolicited notification.
 Reply match: same device index, same feature index, same byte 3. Timeout 500 ms, one retry.
 
 Errors → typed `HidppException` with the code:

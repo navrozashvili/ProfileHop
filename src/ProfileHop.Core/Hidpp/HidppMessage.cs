@@ -13,7 +13,7 @@ public readonly struct HidppMessage
     public const int LongLength = 20;
     public const int MaxParams = 16;
 
-    /// <summary>Our fixed, non-zero software ID (same value Solaar uses). swId 0 marks notifications.</summary>
+    /// <summary>Solaar's software ID, used by test fixtures. HidppClient rotates 0x1..0xF per send; swId 0 marks notifications.</summary>
     public const byte SoftwareId = 0x0B;
 
     /// <summary>Byte 2 of a HID++ 2.0 error reply.</summary>
