@@ -25,4 +25,6 @@ profile via HID++ 2.0 (feature 0x8100 setCurrentProfile). Full plan: `docs/PLAN.
 - **Hardware steps are the user's.** Anything that needs the mouse is a manual check the user runs. Ask them
   to run the CLI command and paste the output; don't assume success. Never run the CLI against the device yourself.
 - **AOT-clean.** No reflection-based JSON, no `dynamic`; trim and AOT warnings are errors.
+- **Stay tiny.** Idle ~0% CPU, a few MB RAM, exe < 10 MB. UI windows exist only while open; no timers,
+  polling or background work at idle; no UI frameworks or extra NuGet UI dependencies.
 - Small diffs, one milestone per commit, and unit tests for every encoder and decoder.
