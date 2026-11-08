@@ -82,6 +82,12 @@ internal static class Program
             remove { }
         }
 
+        public event Action? DeviceArrived
+        {
+            add { }
+            remove { }
+        }
+
         public ProfileState GetState() => throw new InvalidOperationException("Started with --no-mouse.");
 
         public ProfileState SetProfile(int profile) => throw new InvalidOperationException("Started with --no-mouse.");

@@ -7,13 +7,11 @@ namespace ProfileHop.Core;
 /// <param name="CurrentProfile">1-based active profile; 0 = none / host mode (the mouse reports 0 while G HUB controls it).</param>
 /// <param name="EnabledProfiles">1-based enabled profiles from the profile directory, ascending.</param>
 /// <param name="DpiIndex">Active DPI slot inside the current profile, or null if not read.</param>
-/// <param name="PreferredDeviceMissing">A device was chosen in config but not found; the automatic choice is in use.</param>
 public sealed record ProfileState(
     int OnboardMode,
     int CurrentProfile,
     IReadOnlyList<int> EnabledProfiles,
-    int? DpiIndex,
-    bool PreferredDeviceMissing = false)
+    int? DpiIndex)
 {
     private static readonly IReadOnlyDictionary<int, string> NoNames = new Dictionary<int, string>();
 
@@ -44,6 +42,22 @@ public static class DeviceKey
 
     public static bool Matches(string key, string? preference) =>
         preference is not null && string.Equals(key, preference.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The USB PID part of a key (<c>"C54D/…"</c> → 0xC54D), or null if the key has no valid PID.</summary>
+    public static ushort? ProductIdOf(string key)
+    {
+        int slash = key.IndexOf('/', StringComparison.Ordinal);
+        return slash == 4 && ushort.TryParse(key.AsSpan(0, 4), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out ushort pid)
+            ? pid
+            : null;
+    }
+
+    /// <summary>The name part of a key (<c>"C54D/PRO X2 SUPERSTRIKE"</c> → <c>"PRO X2 SUPERSTRIKE"</c>); the whole key if it has no PID.</summary>
+    public static string NameOf(string key)
+    {
+        string k = key.Trim();
+        return ProductIdOf(k) is null ? k : k[5..];
+    }
 
     /// <summary>Menu text: name plus how it is connected (index 0xFF = directly over USB).</summary>
     public static string DisplayName(ushort productId, string? name, byte deviceIndex)
@@ -99,4 +113,10 @@ public interface IProfileSwitcher : IDisposable
 
     /// <summary>Raised from a background thread when the mouse reports a profile change (e.g. from a mouse button).</summary>
     event Action<int>? ProfileChangedByDevice;
+
+    /// <summary>
+    /// Raised from a background thread when the chosen device, which the last call could not reach, is reported back
+    /// online by its receiver (HID++ 1.0 connection notification). The caller should reconnect once.
+    /// </summary>
+    event Action? DeviceArrived;
 }

@@ -228,6 +228,18 @@ public sealed class MouseControllerTests : IDisposable
         Assert.Equal("C54D/#02", DeviceKey.Format(0xC54D, null, 0x02));
     }
 
+    [Theory]
+    [InlineData("C54D/PRO X2 SUPERSTRIKE", 0xC54D, "PRO X2 SUPERSTRIKE")]
+    [InlineData(" c53a/G502 X PLUS ", 0xC53A, "G502 X PLUS")]
+    [InlineData("C54D/#02", 0xC54D, "#02")]
+    [InlineData("SOMETHING", null, "SOMETHING")]
+    [InlineData("XYZW/NAME", null, "XYZW/NAME")]
+    public void Device_key_parts(string key, int? pid, string name)
+    {
+        Assert.Equal(pid is null ? null : (ushort?)pid, DeviceKey.ProductIdOf(key.Trim()));
+        Assert.Equal(name, DeviceKey.NameOf(key));
+    }
+
     [Fact]
     public void Preference_picks_matching_device_over_first_mouse()
     {
@@ -239,8 +251,6 @@ public sealed class MouseControllerTests : IDisposable
 
         Assert.Equal(0xC547, m.ProductId);
         Assert.Equal("G502 X PLUS", m.Name);
-        Assert.False(m.PreferredDeviceMissing);
-        Assert.False(Controller.GetState().PreferredDeviceMissing);
     }
 
     [Fact]
@@ -279,19 +289,263 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
-    public void Missing_preference_falls_back_to_automatic_and_flags_it()
+    public void Missing_preference_throws_instead_of_falling_back_to_another_device()
     {
         AddReceiverWithMouseAt(0x01);
         var log = new Tray.ProfileWorkerTests.ListLog();
         _controller = new MouseController(_source, Timeout, log: log);
         Controller.Configure("C54D/SOMETHING ELSE", forceOnboardMode: false);
 
-        ConnectedMouse m = Controller.Connect();
+        var ex = Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.Connect());
 
-        Assert.Equal("C54D/PRO X2 SUPERSTRIKE", m.Key);
-        Assert.True(m.PreferredDeviceMissing);
-        Assert.True(Controller.GetState().PreferredDeviceMissing);
+        Assert.Equal("C54D/SOMETHING ELSE", ex.DeviceKey);
+        Assert.Equal("SOMETHING ELSE", ex.DeviceName);
+        Assert.NotEmpty(ex.Probes);
+        Assert.IsAssignableFrom<MouseNotFoundException>(ex); // the CLI's probe listing still applies
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        Assert.Empty(_mouse.Calls); // only the probe's reads, never an OnboardProfiles call
         Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Warning && l.Message.Contains("C54D/SOMETHING ELSE"));
+    }
+
+    // ---- chosen device asleep / missing (never fall back to another device) ----
+
+    private const string Superstrike = "C54D/PRO X2 SUPERSTRIKE";
+
+    /// <summary>The user's PC: a G502 X PLUS with 0x8100 on receiver C53A (enumerated first), the SUPERSTRIKE on C54D.</summary>
+    private Core.Hid.HidDevice AddOtherMouseReceiverFirst()
+    {
+        var rx = new SimulatedReceiver();
+        rx.Paired[0x01] = new SimulatedDevice { Name = "G502 X PLUS" };
+        return _source.Add("receiver-C53A", 0xC53A, rx.Handle);
+    }
+
+    private void AssertNeverOpened(Core.Hid.HidDevice device) =>
+        Assert.DoesNotContain(_source.Opened, o => o.Device == device);
+
+    [Fact]
+    public void Chosen_device_asleep_throws_and_never_touches_the_other_mouse()
+    {
+        var g502 = AddOtherMouseReceiverFirst();
+        _receiver.Asleep.Add(0x01);
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+
+        var ex = Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.SetProfile(2));
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.NextDpiSlot());
+
+        Assert.Equal("PRO X2 SUPERSTRIKE", ex.DeviceName);
+        Assert.Contains(ex.Probes, p => p.ProductId == 0xC54D && p.DeviceIndex == 0x01 && p.Error!.Contains("0x09"));
+        AssertNeverOpened(g502);
+    }
+
+    [Fact]
+    public void Chosen_receiver_unplugged_throws_and_never_touches_the_other_mouse()
+    {
+        var g502 = AddOtherMouseReceiverFirst();
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        AssertNeverOpened(g502);
+    }
+
+    [Fact]
+    public void Chosen_device_is_connected_by_the_next_call_once_it_wakes()
+    {
+        AddOtherMouseReceiverFirst();
+        _receiver.Asleep.Add(0x01);
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+
+        _receiver.Asleep.Remove(0x01);
+
+        Assert.Equal(1, Controller.GetState().CurrentProfile);
+        Assert.Equal(Superstrike, Controller.Connect().Key);
+    }
+
+    [Fact]
+    public void Device_change_reconnect_obeys_the_chosen_device()
+    {
+        var g502 = AddOtherMouseReceiverFirst();
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+        Controller.GetState();
+
+        Controller.MarkStale(); // WM_DEVICECHANGE / resume
+        _receiver.Asleep.Add(0x01);
+
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        AssertNeverOpened(g502);
+    }
+
+    [Fact]
+    public void Chosen_device_asleep_at_its_last_index_probes_only_that_index()
+    {
+        var rx = AddReceiverWithMouseAt(0x02);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Controller.GetState();
+        Controller.MarkStale();
+        _receiver.Asleep.Add(0x02);
+
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+
+        var written = _source.LastTransportFor(rx).Written;
+        Assert.Single(written);
+        Assert.Equal(0x02, written[0][1]);
+    }
+
+    [Fact]
+    public void Chosen_device_moved_to_another_index_is_still_found()
+    {
+        AddReceiverWithMouseAt(0x02);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Controller.GetState();
+        Controller.MarkStale();
+        _receiver.Paired.Remove(0x02); // empty slot now: HID++ 1.0 error 0x08 (unknown device)
+        _receiver.Paired[0x04] = _mouse;
+
+        Assert.Equal(0x04, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Chosen_device_going_to_sleep_while_connected_throws_chosen_device_not_found()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Controller.GetState();
+        _receiver.Asleep.Add(0x01);
+
+        var ex = Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+
+        Assert.IsType<DeviceUnreachableException>(ex.InnerException);
+    }
+
+    private static byte[] Connected(byte index, bool link) => Short(index, 0x41, 0x04, link ? (byte)0x00 : (byte)0x40, 0x8A, 0x40);
+
+    [Fact]
+    public async Task Connection_notification_while_waiting_for_the_chosen_device_raises_DeviceArrived()
+    {
+        AddOtherMouseReceiverFirst();
+        _receiver.Asleep.Add(0x01);
+        var rx = AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        var arrived = new TaskCompletionSource();
+        Controller.DeviceArrived += () => arrived.TrySetResult();
+        FakeHidTransport waiting = _source.LastTransportFor(rx);
+        Assert.False(waiting.IsDisposed); // kept open for the receiver's notifications (read thread only)
+
+        waiting.Push(Connected(0x01, link: false)); // still asleep: nothing
+        await Task.Delay(100);
+        Assert.False(arrived.Task.IsCompleted);
+
+        waiting.Push(Connected(0x01, link: true));
+        await arrived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Chosen_device_that_fell_asleep_while_connected_is_awaited_at_its_index()
+    {
+        var rx = AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Controller.GetState();
+        _receiver.Asleep.Add(0x01);
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        int count = 0;
+        Controller.DeviceArrived += () => Interlocked.Increment(ref count);
+        FakeHidTransport waiting = _source.LastTransportFor(rx);
+        Assert.False(waiting.IsDisposed);
+
+        waiting.Push(Connected(0x03, link: true)); // another device on the same receiver
+        await Task.Delay(100);
+        Assert.Equal(0, count);
+
+        waiting.Push(Connected(0x01, link: true));
+        SpinWait.SpinUntil(() => Volatile.Read(ref count) > 0, 2000);
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public async Task Connection_notifications_on_a_live_connection_add_no_work()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Controller.GetState();
+        int count = 0;
+        Controller.DeviceArrived += () => Interlocked.Increment(ref count);
+        FakeHidTransport t = _source.Opened.Single().Transport;
+        int written = t.Written.Count;
+
+        t.Push(Connected(0x01, link: false));
+        t.Push(Connected(0x01, link: true));
+        await Task.Delay(100);
+
+        Assert.Equal(0, count);
+        Assert.Equal(written, t.Written.Count);
+    }
+
+    [Fact]
+    public void Waiting_receiver_is_closed_by_MarkStale_Configure_and_Dispose()
+    {
+        _receiver.Asleep.Add(0x01);
+        var rx = AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        Controller.MarkStale();
+        Assert.True(_source.LastTransportFor(rx).IsDisposed);
+
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        Controller.Configure(null, forceOnboardMode: false);
+        Assert.True(_source.LastTransportFor(rx).IsDisposed);
+
+        Controller.Configure(Superstrike, forceOnboardMode: false);
+        Assert.Throws<ChosenDeviceNotFoundException>(() => Controller.GetState());
+        Controller.Dispose();
+        Assert.True(_source.LastTransportFor(rx).IsDisposed);
+    }
+
+    [Fact]
+    public void Automatic_mode_still_takes_the_other_mouse_when_the_superstrike_sleeps()
+    {
+        AddOtherMouseReceiverFirst();
+        _receiver.Asleep.Add(0x01);
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Equal("C53A/G502 X PLUS", Controller.Connect().Key);
+    }
+
+    [Fact]
+    public void Configure_with_the_same_preference_still_reconnects()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+        Controller.GetState();
+        FakeHidTransport first = _source.Opened.Single().Transport;
+
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+
+        Assert.True(first.IsDisposed);
+        Controller.GetState();
+        Assert.Equal(2, _source.Opened.Count);
+    }
+
+    [Fact]
+    public void Rescan_connects_the_chosen_device_once_it_is_present()
+    {
+        AddOtherMouseReceiverFirst();
+        _receiver.Asleep.Add(0x01);
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(Superstrike, forceOnboardMode: true);
+
+        IReadOnlyList<KnownDevice> asleep = Controller.ListDevices(rescan: true);
+        Assert.DoesNotContain(asleep, d => d.IsActive); // the G502 is listed but not used
+
+        _receiver.Asleep.Remove(0x01);
+        IReadOnlyList<KnownDevice> awake = Controller.ListDevices(rescan: true);
+
+        Assert.Equal(Superstrike, Assert.Single(awake, d => d.IsActive).Key);
     }
 
     [Fact]

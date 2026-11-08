@@ -13,6 +13,7 @@ public static class TrayText
         var text = status.Kind switch
         {
             WorkerStatusKind.Starting => "ProfileHop: connecting…",
+            WorkerStatusKind.Unreachable when status.MissingDevice is { } name => $"ProfileHop: {name} not found (asleep or off? move it)",
             WorkerStatusKind.Unreachable => "ProfileHop: Mouse not reachable",
             _ => ProfileTip(status.State!, names),
         };
@@ -58,8 +59,7 @@ public static class TrayText
         if (state.OnboardMode == 2) return "ProfileHop: mouse in host mode (close G HUB)";
         var p = state.CurrentProfile;
         var name = ProfileDisplay.NameOf(p, names, state.ProfileNames);
-        var text = name is null ? $"ProfileHop: profile {p}" : $"ProfileHop: {name} (profile {p})";
-        return state.PreferredDeviceMissing ? text + ", chosen device not found" : text;
+        return name is null ? $"ProfileHop: profile {p}" : $"ProfileHop: {name} (profile {p})";
     }
 }
 

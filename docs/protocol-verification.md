@@ -17,6 +17,7 @@ Sources (fetched 2026-11-08, pinned to these commits):
   - [`hidpp10_constants.py`](https://github.com/pwr-Solaar/Solaar/blob/e7304c4c451cc9bb4f206a914844525e67856a28/lib/logitech_receiver/hidpp10_constants.py)
   - [`settings_templates.py`](https://github.com/pwr-Solaar/Solaar/blob/e7304c4c451cc9bb4f206a914844525e67856a28/lib/logitech_receiver/settings_templates.py)
   - [`notifications.py`](https://github.com/pwr-Solaar/Solaar/blob/e7304c4c451cc9bb4f206a914844525e67856a28/lib/logitech_receiver/notifications.py)
+  - [`common.py`](https://github.com/pwr-Solaar/Solaar/blob/e7304c4c451cc9bb4f206a914844525e67856a28/lib/logitech_receiver/common.py)
 
 Line numbers below refer to those commits. In libratbag the function is written as the full byte 3 value
 (`0x10` = function 1 with swId 0); in Solaar as the low byte of the 16-bit `request_id` (same encoding).
@@ -166,7 +167,31 @@ Only Solaar implements the calls; libratbag just defines the page ID.
 
 Selection in `MouseController.Connect`: every enumerated device, indexes 0x01–0x06 then 0xFF; candidates are HID++ ≥ 2.0
 with 0x8100. The first candidate whose type is 3 (mouse) wins; if none reports mouse (or 0x0005 is missing/fails), the
-first candidate is used and `ConnectedMouse.TypeFallback` is set so the CLI can say so.
+first candidate is used and `ConnectedMouse.TypeFallback` is set so the CLI can say so. That is the automatic choice
+only: with a device chosen in config (`device`), only receivers with the key's PID are opened, the device's last index
+is tried first, and if it is not there `ChosenDeviceNotFoundException` is thrown. Nothing is ever sent to another
+device (the Device menu's Rescan still probes everything, read-only, to list the devices).
+
+## Receiver device connection notification (HID++ 1.0 sub-id 0x41) — waking up the chosen device
+
+Added so the tray turns active by itself when the chosen mouse wakes up, without polling. Only Solaar handles it
+(libratbag does not use it).
+
+| Item | Source | Decision |
+| --- | --- | --- |
+| Sub-id | `Notification.DJ_PAIRING = 0x41` ("device connection (and disconnection)"); `CONNECT_DISCONNECT = 0x40` is unpairing; `CONNECTED = 0x42` — common.py `class Notification` | react to 0x41 only |
+| Which reports are notifications | base.py `make_notification`: `sub_id = data[0]`, `address = data[1]`, payload `data[2:]` (`data` = the report after report ID and device number); `sub_id & 0x80` → reply/error, not a notification (so 0x8F errors are excluded); `sub_id >= 0x40` → "standard HID++ 1.0 notification, SubId may be 0x40 - 0x7F" | `HidppClient` raises `Notification` for short reports with byte 2 in 0x40–0x7F even though byte 3 is not swId 0 (our requests and replies are all long reports) |
+| Routing | notifications.py: `if notification.sub_id >= 0x40:` → `_process_dj_notification` when the report ID is the DJ one (0x20), else `_process_hidpp10_notification` | short HID++ report 0x10 only |
+| Frame | `[0x10, device index, 0x41, protocol (address), flags, wpid low, wpid high]` | decoded by `DeviceConnection.TryDecode` |
+| Link state | notifications.py `_process_hidpp10_notification`, DJ_PAIRING branch: `flags = ord(notification.data[:1]) & 0xF0`; `address == 0x02` (27 MHz): `link_established = True`; `address > 0x00`: `link_established = not (flags & 0x40)`, `link_encrypted = bool(flags & 0x20) or address == 0x10` (Bolt); `address == 0` → "unknown protocol", ignored; `wpid = data[2:3] + data[1:2]` | link up = bit 0x40 of byte 4 clear (27 MHz: always); protocol 0 ignored; wpid and the encrypted bit unused |
+| When the receiver sends it | hidpp10_constants.py `NotificationFlag.WIRELESS = 0x000100  # notify when the device wireless goes on/off-line`, set in receiver register `NOTIFICATIONS = 0x00`; Solaar writes that register itself | **ProfileHop does not write the register** (no writes beyond the allowed calls). Whether the LIGHTSPEED receiver sends 0x41 without it (G HUB or the receiver default may have enabled it) is unverified — **check on hardware**: with `logLevel: "Debug"`, waking the mouse while the tray waits should log `RX 10 01 41 …` |
+
+Use (`MouseController`): while the chosen device is unreachable — not found at a scan, or a request to it got a HID++
+1.0 error — its receiver's transport stays open (its read thread only, no polling). A 0x41 with link up for the
+device's index (any index if it was never seen) raises `DeviceArrived`; the worker marks the connection stale and
+refreshes once. On a live connection the notification is ignored: link down/up while connected changes nothing we
+show, and a request that fails while the device sleeps switches to waiting. If the receiver never sends 0x41, the
+next hotkey press (or a WM_DEVICECHANGE) still reconnects.
 
 ## Disagreements with the plan / between sources
 
