@@ -22,6 +22,10 @@ public class ProfileWorkerTests
 
         public void RaiseDeviceChange(int profile) => ProfileChangedByDevice?.Invoke(profile);
 
+        public event Action? DeviceArrived;
+
+        public void RaiseDeviceArrived() => DeviceArrived?.Invoke();
+
         private ProfileState State => new(Mode, Current, Enabled, Dpi);
 
         public ProfileState GetState()
@@ -647,6 +651,70 @@ public class ProfileWorkerTests
 
         Assert.True(mouse.Cancelled.IsSet);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"Dispose took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public void Chosen_device_not_found_is_unreachable_with_its_name_and_next_press_retries()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.FailWith = new ChosenDeviceNotFoundException("C54D/PRO X2 SUPERSTRIKE", []);
+
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+
+        var failed = Assert.Single(statuses);
+        Assert.Equal(WorkerStatusKind.Unreachable, failed.Kind);
+        Assert.Equal("PRO X2 SUPERSTRIKE", failed.MissingDevice);
+
+        mouse.FailWith = null;
+        worker.RequestNextProfile();
+        worker.ProcessPending();
+        Assert.True(worker.Status.IsReachable);
+        Assert.Null(worker.Status.MissingDevice);
+    }
+
+    [Fact]
+    public void Chosen_device_arriving_marks_stale_and_refreshes_once()
+    {
+        var (worker, mouse, _) = Create();
+        mouse.FailWith = new ChosenDeviceNotFoundException("C54D/PRO X2 SUPERSTRIKE", []);
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.FailWith = null;
+        mouse.Calls.Clear();
+
+        mouse.RaiseDeviceArrived();
+        mouse.RaiseDeviceArrived();
+        worker.ProcessPending();
+
+        Assert.Equal(["stale", "get"], mouse.Calls);
+        Assert.True(worker.Status.IsReachable);
+        Assert.False(worker.ProcessPending());
+    }
+
+    [Fact]
+    public void Reconfigure_with_the_same_device_still_reconnects()
+    {
+        var (worker, mouse, _) = Create();
+        worker.Reconfigure("C54D/PRO X2 SUPERSTRIKE", forceOnboardMode: true);
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+
+        worker.Reconfigure("C54D/PRO X2 SUPERSTRIKE", forceOnboardMode: true);
+        worker.ProcessPending();
+
+        Assert.Equal(["configure C54D/PRO X2 SUPERSTRIKE force", "get"], mouse.Calls);
+    }
+
+    [Fact]
+    public void Dispose_unsubscribes_from_device_arrival()
+    {
+        var (worker, mouse, _) = Create();
+        worker.Dispose();
+
+        mouse.RaiseDeviceArrived();
+
+        Assert.False(worker.ProcessPending());
     }
 
     // ---- device choice ----
