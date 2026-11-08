@@ -4,8 +4,9 @@ namespace ProfileHop.Core.Tray;
 
 /// <summary>
 /// Runs every <see cref="IProfileSwitcher"/> call on one background thread so the UI thread never blocks on the mouse.
-/// Requests are coalesced: rapid presses collapse into one absolute target ("profile 2"), relative "next" presses are
-/// counted from the pending target (or the last known profile), and only the result is sent to the mouse.
+/// Requests are coalesced: rapid presses collapse into one absolute target ("profile 2"), relative "next"/"previous"
+/// presses are summed into net steps counted from the pending target (or the last known profile), and only the result
+/// is sent to the mouse.
 /// Failures: <see cref="HostModeException"/> shows the host-mode state; a device rejection (HID++ error, unconfirmed
 /// switch) keeps the last known state and sets <see cref="WorkerStatus.Notice"/>; anything else (timeout, transport
 /// closed, mouse asleep or not found) turns into <see cref="WorkerStatusKind.Unreachable"/>. The next request retries
@@ -21,7 +22,7 @@ public sealed class ProfileWorker : IDisposable
 
     // Pending work, guarded by _lock.
     private int? _target;         // absolute profile requested
-    private int _nextCount;       // "next profile" presses on top of _target (or the current profile)
+    private int _steps;           // net "next" (+1) / "previous" (−1) presses on top of _target (or the current profile)
     private bool _refresh;
     private bool _stale;
     private int? _deviceProfile;
@@ -89,10 +90,12 @@ public sealed class ProfileWorker : IDisposable
     public void RequestProfile(int profile) => Post(() =>
     {
         _target = profile;
-        _nextCount = 0;
+        _steps = 0;
     });
 
-    public void RequestNextProfile() => Post(() => _nextCount++);
+    public void RequestNextProfile() => Post(() => _steps++);
+
+    public void RequestPreviousProfile() => Post(() => _steps--);
 
     public void RequestNextDpiSlot() => Post(() => _dpiSteps++);
 
@@ -122,14 +125,14 @@ public sealed class ProfileWorker : IDisposable
     public bool ProcessPending()
     {
         int? target, deviceProfile;
-        int nextCount, dpiSteps;
+        int steps, dpiSteps;
         bool refresh, stale, listDevices, rescan;
         (string? Device, bool ForceOnboard)? configure;
         lock (_lock)
         {
             if (!HasPendingLocked()) return false;
-            (target, nextCount, refresh, stale, deviceProfile, dpiSteps) = (_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps);
-            (_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
+            (target, steps, refresh, stale, deviceProfile, dpiSteps) = (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps);
+            (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
             (configure, listDevices, rescan) = (_configure, _listDevices, _rescan);
             (_configure, _listDevices, _rescan) = (null, false, false);
         }
@@ -147,7 +150,7 @@ public sealed class ProfileWorker : IDisposable
             if (rescan) refresh = true;
         }
 
-        if (!HasWork(target, nextCount, refresh, stale, deviceProfile, dpiSteps)) return true;
+        if (!HasWork(target, steps, refresh, stale, deviceProfile, dpiSteps)) return true;
 
         WorkerStatus status;
         try
@@ -161,7 +164,7 @@ public sealed class ProfileWorker : IDisposable
                 refresh = true;
             }
 
-            var state = Apply(target, nextCount, refresh, deviceProfile);
+            var state = Apply(target, steps, refresh, deviceProfile);
 
             for (var i = 0; i < dpiSteps; i++)
             {
@@ -244,25 +247,25 @@ public sealed class ProfileWorker : IDisposable
         return WorkerStatus.Reachable(state) with { Notice = notice };
     }
 
-    private ProfileState? Apply(int? target, int nextCount, bool refresh, int? deviceProfile)
+    private ProfileState? Apply(int? target, int steps, bool refresh, int? deviceProfile)
     {
         _attemptedProfile = null;
-        if (target is not null || nextCount > 0)
+        if (target is not null || steps != 0)
         {
             var overrideList = _cycleOverride;
-            var needsState = target is null || (nextCount > 0 && overrideList is not { Count: > 0 });
+            var needsState = target is null || (steps != 0 && overrideList is not { Count: > 0 });
             var known = needsState ? _lastState ?? _switcher.GetState() : _lastState;
             var profile = target ?? known!.CurrentProfile;
-            if (nextCount > 0)
+            if (steps != 0)
             {
                 var (candidates, fallback) = ProfileCycle.Candidates(known?.EnabledProfiles ?? [], overrideList, _configuredProfiles);
                 if (fallback && !_loggedConfiguredFallback)
                 {
                     _loggedConfiguredFallback = true;
-                    _log?.Write(LogLevel.Info, $"Mouse reports fewer than two enabled profiles; \"next\" cycles the configured profiles ({string.Join(", ", candidates)}).");
+                    _log?.Write(LogLevel.Info, $"Mouse reports fewer than two enabled profiles; \"next\"/\"previous\" cycle the configured profiles ({string.Join(", ", candidates)}).");
                 }
-                for (var i = 0; i < nextCount; i++)
-                    profile = ProfileCycle.Next(profile, candidates, null);
+                for (var i = 0; i < Math.Abs(steps); i++)
+                    profile = steps > 0 ? ProfileCycle.Next(profile, candidates, null) : ProfileCycle.Previous(profile, candidates, null);
             }
 
             _log?.Write(LogLevel.Info, $"Switching to profile {profile}.");
@@ -297,10 +300,10 @@ public sealed class ProfileWorker : IDisposable
     }
 
     private bool HasPendingLocked() =>
-        HasWork(_target, _nextCount, _refresh, _stale, _deviceProfile, _dpiSteps) || _configure is not null || _listDevices;
+        HasWork(_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) || _configure is not null || _listDevices;
 
-    private static bool HasWork(int? target, int nextCount, bool refresh, bool stale, int? deviceProfile, int dpiSteps) =>
-        target is not null || nextCount > 0 || refresh || stale || deviceProfile is not null || dpiSteps > 0;
+    private static bool HasWork(int? target, int steps, bool refresh, bool stale, int? deviceProfile, int dpiSteps) =>
+        target is not null || steps != 0 || refresh || stale || deviceProfile is not null || dpiSteps > 0;
 
     private void ListDevices(bool rescan)
     {

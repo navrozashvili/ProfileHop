@@ -9,15 +9,18 @@ public enum HotkeyActionKind
     NextProfile,
     NextDpiSlot,
     Profile,
+    PreviousProfile,
 }
 
 /// <summary>What a hotkey does. <see cref="Profile"/> is the 1-based target for <see cref="HotkeyActionKind.Profile"/>.</summary>
 public readonly record struct HotkeyAction(HotkeyActionKind Kind, int Profile)
 {
-    /// <summary>Config text: "next-profile", "next-dpi-slot" or "profile N" (parsed back by <see cref="TryParse"/>).</summary>
+    /// <summary>Config text: "next-profile", "previous-profile", "next-dpi-slot" or "profile N" (parsed back by
+    /// <see cref="TryParse"/>).</summary>
     public override string ToString() => Kind switch
     {
         HotkeyActionKind.NextProfile => "next-profile",
+        HotkeyActionKind.PreviousProfile => "previous-profile",
         HotkeyActionKind.NextDpiSlot => "next-dpi-slot",
         _ => "profile " + Profile.ToString(CultureInfo.InvariantCulture),
     };
@@ -32,6 +35,9 @@ public readonly record struct HotkeyAction(HotkeyActionKind Kind, int Profile)
             case ["next-profile"]:
                 action = new HotkeyAction(HotkeyActionKind.NextProfile, 0);
                 return true;
+            case ["previous-profile"]:
+                action = new HotkeyAction(HotkeyActionKind.PreviousProfile, 0);
+                return true;
             case ["next-dpi-slot"]:
                 action = new HotkeyAction(HotkeyActionKind.NextDpiSlot, 0);
                 return true;
@@ -39,7 +45,7 @@ public readonly record struct HotkeyAction(HotkeyActionKind Kind, int Profile)
                 action = new HotkeyAction(HotkeyActionKind.Profile, p);
                 return true;
             default:
-                error = $"Unknown hotkey action '{text}'. Use \"next-profile\", \"next-dpi-slot\" or \"profile N\".";
+                error = $"Unknown hotkey action '{text}'. Use \"next-profile\", \"previous-profile\", \"next-dpi-slot\" or \"profile N\".";
                 return false;
         }
     }

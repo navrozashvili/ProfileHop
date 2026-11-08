@@ -3,7 +3,7 @@ using ProfileHop.Core.Tray;
 namespace ProfileHop.Core.Config;
 
 /// <summary>A hotkey in config.json: <c>keys</c> like "Ctrl+Alt+F9" (empty = disabled) and an <c>action</c>
-/// ("next-profile", "next-dpi-slot" or "profile N").</summary>
+/// ("next-profile", "previous-profile", "next-dpi-slot" or "profile N").</summary>
 public sealed record HotkeyBinding(string Keys, string Action);
 
 /// <summary>Contents of <c>%APPDATA%\ProfileHop\config.json</c>. Missing fields keep these defaults.</summary>
@@ -32,16 +32,18 @@ public sealed class AppConfig
     /// <summary>Which device to control (key chosen from the tray's Device menu); null = automatic.</summary>
     public string? Device { get; set; }
 
+    private const uint VkF8 = 0x77;
     private const uint VkF9 = 0x78;
     private const int DefaultProfileCount = 5;
 
     /// <summary>
-    /// Built-in hotkey for an action: next profile Ctrl+Alt+F9, profile 1–9 Ctrl+Alt+1–9, otherwise none (next DPI slot
-    /// is off by default).
+    /// Built-in hotkey for an action: next profile Ctrl+Alt+F9, previous profile Ctrl+Alt+F8, profile 1–9
+    /// Ctrl+Alt+1–9, otherwise none (next DPI slot is off by default).
     /// </summary>
     public static Hotkey? DefaultHotkey(HotkeyAction action) => action.Kind switch
     {
         HotkeyActionKind.NextProfile => new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, VkF9),
+        HotkeyActionKind.PreviousProfile => new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, VkF8),
         HotkeyActionKind.Profile when action.Profile is >= 1 and <= 9 =>
             new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, (uint)('0' + action.Profile)),
         _ => null,
@@ -52,7 +54,7 @@ public sealed class AppConfig
 
     internal static List<HotkeyBinding> DefaultHotkeys()
     {
-        List<HotkeyAction> actions = [new(HotkeyActionKind.NextProfile, 0)];
+        List<HotkeyAction> actions = [new(HotkeyActionKind.NextProfile, 0), new(HotkeyActionKind.PreviousProfile, 0)];
         for (var p = 1; p <= DefaultProfileCount; p++) actions.Add(new(HotkeyActionKind.Profile, p));
         actions.Add(new(HotkeyActionKind.NextDpiSlot, 0));
         return [.. actions.Select(a => new HotkeyBinding(DefaultHotkey(a)?.ToString() ?? "", a.ToString()))];

@@ -266,6 +266,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         switch (entry.Action.Kind)
         {
             case HotkeyActionKind.NextProfile: _worker.RequestNextProfile(); break;
+            case HotkeyActionKind.PreviousProfile: _worker.RequestPreviousProfile(); break;
             case HotkeyActionKind.NextDpiSlot: _worker.RequestNextDpiSlot(); break;
             default: _worker.RequestProfile(entry.Action.Profile); break;
         }
