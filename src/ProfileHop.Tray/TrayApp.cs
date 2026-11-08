@@ -43,7 +43,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private HWND _hwnd;
     private HDEVNOTIFY _devNotify;
     private HICON _icon;
-    private (string Glyph, bool Active) _iconKey;
+    private (string Glyph, bool Active, int Size) _iconKey;
     private WorkerStatus _shown = WorkerStatus.Starting;
     private ProfileHop.Core.ProfileState? _lastState;   // last state the mouse reported (kept while unreachable): profile list and names
     private bool _iconAdded;
@@ -198,6 +198,13 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                     _worker.NotifyDeviceChange();
                 }
                 return new LRESULT(1);
+
+            case PInvoke.WM_DPICHANGED:
+            case PInvoke.WM_SETTINGCHANGE:
+            case PInvoke.WM_DISPLAYCHANGE:
+                // Scale or resolution may have changed: redraw the icon if the small-icon size did (cheap no-op otherwise).
+                if (_iconAdded) UpdateIcon();
+                return null; // let DefWindowProc see them too
 
             case PInvoke.WM_DESTROY:
                 Shutdown();
@@ -403,13 +410,13 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         if (!old.IsNull) PInvoke.DestroyIcon(old);
     }
 
-    /// <summary>Creates the HICON only when glyph or colour changed; returns the replaced icon (to destroy) or null.</summary>
+    /// <summary>Creates the HICON only when glyph, colour or size changed; returns the replaced icon (to destroy) or null.</summary>
     private HICON EnsureIcon()
     {
-        var key = (TrayText.IconGlyph(_shown), _shown.IsReachable);
+        var key = (TrayText.IconGlyph(_shown), _shown.IsReachable, TrayIconRenderer.IconSize(_hwnd));
         if (!_icon.IsNull && key == _iconKey) return default;
         var old = _icon;
-        _icon = TrayIconRenderer.Create(key.Item1, key.Item2);
+        _icon = TrayIconRenderer.Create(key.Item1, key.Item2, key.Item3);
         _iconKey = key;
         return old;
     }
