@@ -1,10 +1,14 @@
+using ProfileHop.Core.Hidpp;
+
 namespace ProfileHop.Core.Tray;
 
 /// <summary>
 /// Runs every <see cref="IProfileSwitcher"/> call on one background thread so the UI thread never blocks on the mouse.
 /// Requests are coalesced: rapid presses collapse into one absolute target ("profile 2"), relative "next" presses are
 /// counted from the pending target (or the last known profile), and only the result is sent to the mouse.
-/// Any exception from the switcher turns into <see cref="WorkerStatusKind.Unreachable"/>; the next request retries
+/// Failures: <see cref="HostModeException"/> shows the host-mode state; a device rejection (HID++ error, unconfirmed
+/// switch) keeps the last known state and sets <see cref="WorkerStatus.Notice"/>; anything else (timeout, transport
+/// closed, mouse asleep or not found) turns into <see cref="WorkerStatusKind.Unreachable"/>. The next request retries
 /// (the switcher reconnects lazily).
 /// </summary>
 public sealed class ProfileWorker : IDisposable
@@ -29,6 +33,7 @@ public sealed class ProfileWorker : IDisposable
 
     // Worker-thread state.
     private ProfileState? _lastState;
+    private int? _attemptedProfile;
     private volatile WorkerStatus _status = WorkerStatus.Starting;
     private volatile IReadOnlyList<int>? _cycleOverride;
 
@@ -156,11 +161,19 @@ public sealed class ProfileWorker : IDisposable
             _lastState = state;
             status = WorkerStatus.Reachable(state);
         }
+        catch (HostModeException ex)
+        {
+            _log?.Write(LogLevel.Warning, $"Not switching: {ex.Message}");
+            _lastState = ex.State;
+            status = WorkerStatus.Reachable(ex.State);
+        }
+        catch (Exception ex) when (ex is HidppException or HidppProtocolException)
+        {
+            status = Rejected(ex);
+        }
         catch (Exception ex)
         {
-            _lastState = null;
-            _log?.Write(LogLevel.Warning, $"Mouse not reachable: {ex.GetType().Name}: {ex.Message}");
-            status = WorkerStatus.Unreachable(ex.Message);
+            status = Unreachable(ex);
         }
 
         _status = status;
@@ -183,8 +196,43 @@ public sealed class ProfileWorker : IDisposable
         thread?.Join(TimeSpan.FromSeconds(3));
     }
 
+    private WorkerStatus Unreachable(Exception ex)
+    {
+        _lastState = null;
+        _log?.Write(LogLevel.Warning, $"Mouse not reachable: {ex.GetType().Name}: {ex.Message}");
+        return WorkerStatus.Unreachable(ex.Message);
+    }
+
+    /// <summary>The mouse answered but refused (HID++ error / unconfirmed): keep the last known state, add a notice.</summary>
+    private WorkerStatus Rejected(Exception ex)
+    {
+        string notice = (_attemptedProfile, ex) switch
+        {
+            (int p, HidppException h) => $"Profile {p} rejected by mouse ({h.Error})",
+            (int p, _) => $"Profile {p} not confirmed by mouse",
+            (null, HidppException h) => $"Mouse rejected the request ({h.Error})",
+            _ => "Mouse did not confirm the request",
+        };
+        _log?.Write(LogLevel.Warning, $"{notice}: {ex.Message}");
+        var state = _lastState;
+        if (state is null)
+        {
+            try
+            {
+                state = _switcher.GetState();
+            }
+            catch (Exception ex2)
+            {
+                return Unreachable(ex2);
+            }
+        }
+        _lastState = state;
+        return WorkerStatus.Reachable(state) with { Notice = notice };
+    }
+
     private ProfileState? Apply(int? target, int nextCount, bool refresh, int? deviceProfile)
     {
+        _attemptedProfile = null;
         if (target is not null || nextCount > 0)
         {
             var overrideList = _cycleOverride;
@@ -195,6 +243,7 @@ public sealed class ProfileWorker : IDisposable
                 profile = ProfileCycle.Next(profile, known?.EnabledProfiles ?? [], overrideList);
 
             _log?.Write(LogLevel.Info, $"Switching to profile {profile}.");
+            _attemptedProfile = profile;
             var state = _switcher.SetProfile(profile);
             if (state.CurrentProfile != profile)
                 _log?.Write(LogLevel.Warning, $"Asked for profile {profile}, mouse reports {state.CurrentProfile}.");

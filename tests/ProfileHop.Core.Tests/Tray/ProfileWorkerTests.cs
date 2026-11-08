@@ -11,6 +11,7 @@ public class ProfileWorkerTests
         public int Mode { get; set; } = 1;
         public int Dpi { get; set; }
         public Exception? FailWith { get; set; }
+        public Exception? FailSetWith { get; set; }
         public List<string> Calls { get; } = [];
         public bool Disposed { get; private set; }
         public Func<int, int>? ConfirmedProfile { get; set; }
@@ -34,6 +35,7 @@ public class ProfileWorkerTests
         {
             lock (Calls) Calls.Add($"set {profile}");
             ThrowIfFailing();
+            if (FailSetWith is not null) throw FailSetWith;
             Current = ConfirmedProfile?.Invoke(profile) ?? profile;
             return State;
         }
@@ -257,6 +259,56 @@ public class ProfileWorkerTests
 
         Assert.Equal(["set 2", "set 2"], mouse.Calls);
         Assert.True(worker.Status.IsReachable);
+    }
+
+    [Fact]
+    public void Host_mode_switch_shows_host_mode_status_not_unreachable()
+    {
+        var (worker, mouse, statuses) = Create();
+        var host = new ProfileState(2, 0, [1], 4);
+        mouse.FailWith = new HostModeException(host);
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        var s = Assert.Single(statuses);
+        Assert.Equal(WorkerStatusKind.Reachable, s.Kind);
+        Assert.Same(host, s.State);
+        Assert.Equal("ProfileHop: mouse in host mode (close G HUB)", TrayText.Tooltip(s, []));
+    }
+
+    [Fact]
+    public void Device_rejection_keeps_reachable_status_with_notice()
+    {
+        var log = new ListLog();
+        var mouse = new FakeSwitcher();
+        var worker = new ProfileWorker(mouse, log);
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.FailWith = new Core.Hidpp.HidppException(Core.Hidpp.HidppError.InvalidArgument, 1, 0x0E, 3);
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(WorkerStatusKind.Reachable, worker.Status.Kind);
+        Assert.Equal(1, worker.Status.State!.CurrentProfile);
+        Assert.Equal("Profile 2 rejected by mouse (InvalidArgument)", worker.Status.Notice);
+        Assert.Contains(log.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("rejected"));
+    }
+
+    [Fact]
+    public void Device_rejection_with_unknown_state_reads_state()
+    {
+        var (worker, mouse, _) = Create();
+        mouse.FailSetWith = new Core.Hidpp.HidppProtocolException("not confirmed");
+
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2", "get"], mouse.Calls);
+        Assert.Equal(WorkerStatusKind.Reachable, worker.Status.Kind);
+        Assert.Equal(1, worker.Status.State!.CurrentProfile);
+        Assert.Equal("Profile 2 not confirmed by mouse", worker.Status.Notice);
     }
 
     [Fact]

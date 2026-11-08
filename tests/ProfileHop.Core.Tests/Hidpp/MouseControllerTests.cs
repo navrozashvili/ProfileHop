@@ -469,23 +469,76 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
-    public void SetProfile_mismatch_throws_and_marks_stale()
+    public void SetProfile_mismatch_throws_and_keeps_connection()
     {
         AddReceiverWithMouseAt(0x01);
         _mouse.IgnoreSetProfile = true;
 
         Assert.Throws<HidppProtocolException>(() => Controller.SetProfile(2));
-        Assert.True(_source.Opened.Single().Transport.IsDisposed);
+        Assert.False(_source.Opened.Single().Transport.IsDisposed);
+        Controller.GetState();
+        Assert.Equal(1, _source.EnumerateCount);
     }
 
     [Fact]
-    public void SetProfile_device_error_marks_stale_and_rethrows()
+    public void SetProfile_device_error_keeps_connection_and_rethrows()
     {
         AddReceiverWithMouseAt(0x01);
 
         var ex = Assert.Throws<HidppException>(() => Controller.SetProfile(9));
         Assert.Equal(HidppError.InvalidArgument, ex.Error);
+        Assert.False(_source.Opened.Single().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void Device_unreachable_error_closes_connection()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.GetState();
+        _receiver.Asleep.Add(0x01);
+
+        Assert.Throws<DeviceUnreachableException>(() => Controller.GetState());
         Assert.True(_source.Opened.Single().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void Simulated_host_mode_reports_profile_0_like_the_real_mouse()
+    {
+        _mouse.OnboardMode = 2;
+        AddReceiverWithMouseAt(0x01);
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(2, s.OnboardMode);
+        Assert.Equal(0, s.CurrentProfile);
+    }
+
+    [Fact]
+    public void SetProfile_in_host_mode_throws_HostModeException_without_sending_set()
+    {
+        _mouse.OnboardMode = 2;
+        AddReceiverWithMouseAt(0x01);
+
+        var ex = Assert.Throws<HostModeException>(() => Controller.SetProfile(2));
+
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function == 3);
+        Assert.Equal(2, ex.State.OnboardMode);
+        Assert.Equal(0, ex.State.CurrentProfile);
+        Assert.False(_source.Opened.Single().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void SetProfile_with_force_switches_back_to_onboard_when_G_HUB_took_over_after_connect()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(null, forceOnboardMode: true);
+        Controller.Connect();
+        _mouse.OnboardMode = 2; // G HUB started later
+
+        ProfileState s = Controller.SetProfile(2);
+
+        Assert.Equal(1, _mouse.OnboardMode);
+        Assert.Equal(2, s.CurrentProfile);
     }
 
     [Fact]

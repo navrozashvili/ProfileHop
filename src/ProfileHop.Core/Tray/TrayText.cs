@@ -45,6 +45,7 @@ public static class TrayText
 
     public static string IconGlyph(WorkerStatus status) => status.Kind switch
     {
+        WorkerStatusKind.Reachable when status.State!.OnboardMode == 2 || status.State.CurrentProfile == 0 => "H", // host mode
         WorkerStatusKind.Reachable => status.State!.CurrentProfile.ToString(System.Globalization.CultureInfo.InvariantCulture),
         WorkerStatusKind.Unreachable => "?",
         _ => "…",
