@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ProfileHop.Cli/ProfileHop.Cli.csproj" />
+    <Project Path="src/ProfileHop.Core/ProfileHop.Core.csproj" />
+    <Project Path="src/ProfileHop.Tray/ProfileHop.Tray.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ProfileHop.Core.Tests/ProfileHop.Core.Tests.csproj" />
+  </Folder>
+</Solution>
