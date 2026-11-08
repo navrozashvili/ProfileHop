@@ -22,8 +22,22 @@ public sealed record WorkerStatus(WorkerStatusKind Kind, ProfileState? State, st
     /// <summary>Unreachable because the device chosen in config is not there: its name (e.g. <c>PRO X2 SUPERSTRIKE</c>).</summary>
     public string? MissingDevice { get; init; }
 
+    /// <summary>
+    /// The user request behind this batch's switch, or null. Set only when the switch succeeded, so a failed switch
+    /// (unreachable, rejected, host mode) never teaches a per-app profile.
+    /// </summary>
+    public UserSwitch? User { get; init; }
+
+    /// <summary>True when this batch's switch came from <see cref="ProfileWorker.RequestAutoProfile"/> (no sound).</summary>
+    public bool Automatic { get; init; }
+
     public bool IsReachable => Kind == WorkerStatusKind.Reachable;
 }
+
+/// <summary>A profile switch the user asked for (hotkey or menu), as opposed to an automatic per-app one.</summary>
+/// <param name="LearnFor">App key to remember the resulting profile for, or null to not learn.</param>
+/// <param name="Announce">Show the switch notification.</param>
+public sealed record UserSwitch(string? LearnFor, bool Announce);
 
 /// <summary>
 /// One answer to <see cref="ProfileWorker.RequestDevices"/>. Requests run in order and coalesce, so this answers every

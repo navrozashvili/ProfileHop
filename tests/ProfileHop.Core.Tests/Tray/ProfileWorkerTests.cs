@@ -834,6 +834,162 @@ public class ProfileWorkerTests
         Assert.True(menuOpened < rescan);
     }
 
+    // ---- user vs automatic switches ----
+
+    [Fact]
+    public void UserRequestStatusCarriesUserSwitch()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestProfile(2, new("a", true));
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2"], mouse.Calls);
+        var s = Assert.Single(statuses);
+        Assert.Equal(new UserSwitch("a", true), s.User);
+        Assert.False(s.Automatic);
+    }
+
+    [Fact]
+    public void AutoRequestStatusIsAutomatic()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestAutoProfile(3);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
+        var s = Assert.Single(statuses);
+        Assert.True(s.Automatic);
+        Assert.Null(s.User);
+    }
+
+    [Fact]
+    public void AutoTargetEqualToCurrentSendsNothing()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.Current = 2;
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+        statuses.Clear();
+
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
+
+        Assert.Empty(mouse.Calls);
+        Assert.Empty(statuses);
+        Assert.False(worker.ProcessPending());
+    }
+
+    [Fact]
+    public void AutoTargetEqualToPendingIsStillApplied()
+    {
+        // Coalesced A→B→A: the net target is the current profile, so nothing is sent.
+        var (worker, mouse) = Known(1);
+        worker.RequestAutoProfile(3);
+        worker.RequestAutoProfile(1);
+        worker.ProcessPending();
+        Assert.Empty(mouse.Calls);
+
+        // Processed one by one: the skip compares against the confirmed state (now 3), not the one from before.
+        worker.RequestAutoProfile(3);
+        worker.ProcessPending();
+        worker.RequestAutoProfile(1);
+        worker.ProcessPending();
+        Assert.Equal(["set 3", "set 1"], mouse.Calls);
+    }
+
+    [Fact]
+    public void AutoAfterUserClearsUserSwitch()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestProfile(2, new("a", true));
+        worker.RequestAutoProfile(4);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 4"], mouse.Calls);
+        var s = Assert.Single(statuses);
+        Assert.Null(s.User);
+        Assert.True(s.Automatic);
+    }
+
+    [Fact]
+    public void UserAfterAutoKeepsUserSwitch()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.Enabled = [1, 2, 3, 4, 5];
+
+        worker.RequestAutoProfile(4);
+        worker.RequestNextProfile(new("b", true));
+        worker.ProcessPending();
+
+        Assert.Equal(["get", "set 5"], mouse.Calls);
+        var s = Assert.Single(statuses);
+        Assert.Equal("b", s.User?.LearnFor);
+        Assert.False(s.Automatic);
+    }
+
+    [Fact]
+    public void DeviceChangeHasNoUser()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        mouse.RaiseDeviceChange(3);
+        worker.ProcessPending();
+
+        var s = Assert.Single(statuses);
+        Assert.Null(s.User);
+        Assert.False(s.Automatic);
+    }
+
+    [Fact]
+    public void RefreshHasNoUser()
+    {
+        var (worker, _, statuses) = Create();
+
+        worker.RequestRefresh();
+        worker.ProcessPending();
+
+        Assert.Null(Assert.Single(statuses).User);
+    }
+
+    [Fact]
+    public void UserSwitchThatCancelsOutIsNotLearnedByALaterBatch()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.Current = 2;
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        statuses.Clear();
+
+        worker.RequestNextProfile(new("a", true));
+        worker.RequestPreviousProfile(new("a", true));
+        Assert.False(worker.ProcessPending());
+        worker.RequestRefresh();
+        worker.ProcessPending();
+
+        Assert.Null(Assert.Single(statuses).User);
+    }
+
+    [Fact]
+    public void FailedUserSwitchCarriesNoUser()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.FailWith = new IOException("gone");
+        worker.RequestProfile(2, new("a", true));
+        worker.ProcessPending();
+
+        mouse.FailWith = null;
+        mouse.FailSetWith = new Core.Hidpp.HidppProtocolException("not confirmed");
+        worker.RequestProfile(2, new("a", true));
+        worker.ProcessPending();
+
+        Assert.Equal(2, statuses.Count);
+        Assert.All(statuses, s => Assert.Null(s.User));
+    }
+
     internal sealed class ListLog : ILog
     {
         public List<(LogLevel Level, string Message)> Lines { get; } = [];

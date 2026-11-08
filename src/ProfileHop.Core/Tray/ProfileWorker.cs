@@ -6,7 +6,8 @@ namespace ProfileHop.Core.Tray;
 /// Runs every <see cref="IProfileSwitcher"/> call on one background thread so the UI thread never blocks on the mouse.
 /// Requests are coalesced: rapid presses collapse into one absolute target ("profile 2"), relative "next"/"previous"
 /// presses are summed into net steps counted from the pending target (or the last known profile), and only the result
-/// is sent to the mouse.
+/// is sent to the mouse. User switches (<see cref="UserSwitch"/>) and automatic per-app ones
+/// (<see cref="RequestAutoProfile"/>) are told apart on the resulting <see cref="WorkerStatus"/>.
 /// Failures: <see cref="HostModeException"/> shows the host-mode state; a device rejection (HID++ error, unconfirmed
 /// switch) keeps the last known state and sets <see cref="WorkerStatus.Notice"/>; anything else (timeout, transport
 /// closed, mouse asleep or not found) turns into <see cref="WorkerStatusKind.Unreachable"/>; for
@@ -24,6 +25,8 @@ public sealed class ProfileWorker : IDisposable
     // Pending work, guarded by _lock.
     private int? _target;         // absolute profile requested
     private int _steps;           // net "next" (+1) / "previous" (−1) presses on top of _target (or the current profile)
+    private UserSwitch? _user;    // the latest user request's switch; cleared by RequestAutoProfile
+    private bool _auto;           // _target came from RequestAutoProfile
     private bool _refresh;
     private bool _stale;
     private int? _deviceProfile;
@@ -94,15 +97,44 @@ public sealed class ProfileWorker : IDisposable
         }
     }
 
-    public void RequestProfile(int profile) => Post(() =>
+    /// <summary>
+    /// Switches to <paramref name="profile"/>. <paramref name="user"/> (replacing any pending one) marks it as the
+    /// user's own switch: the batch's success status carries it in <see cref="WorkerStatus.User"/>.
+    /// </summary>
+    public void RequestProfile(int profile, UserSwitch? user = null) => Post(() =>
     {
         _target = profile;
         _steps = 0;
+        _auto = false;
+        _user = user;
     });
 
-    public void RequestNextProfile() => Post(() => _steps++);
+    /// <summary>One step forward from the pending target (user or automatic) or the current profile.</summary>
+    public void RequestNextProfile(UserSwitch? user = null) => Post(() =>
+    {
+        _steps++;
+        _user = user;
+    });
 
-    public void RequestPreviousProfile() => Post(() => _steps--);
+    /// <summary>One step back from the pending target (user or automatic) or the current profile.</summary>
+    public void RequestPreviousProfile(UserSwitch? user = null) => Post(() =>
+    {
+        _steps--;
+        _user = user;
+    });
+
+    /// <summary>
+    /// The per-app profile for the new foreground app. Supersedes any pending user request (its
+    /// <see cref="UserSwitch"/> is dropped). Skipped on the worker thread when it equals the last confirmed profile,
+    /// so a fast A→B→A that coalesces back to the current profile sends nothing and publishes no status.
+    /// </summary>
+    public void RequestAutoProfile(int profile) => Post(() =>
+    {
+        _target = profile;
+        _steps = 0;
+        _auto = true;
+        _user = null;
+    });
 
     public void RequestNextDpiSlot() => Post(() => _dpiSteps++);
 
@@ -141,11 +173,14 @@ public sealed class ProfileWorker : IDisposable
     {
         int? target, deviceProfile;
         int steps, dpiSteps;
-        bool refresh, stale, listDevices, rescan;
+        bool refresh, stale, listDevices, rescan, auto;
         long devicesRequest;
+        UserSwitch? user;
         (string? Device, bool ForceOnboard)? configure;
         lock (_lock)
         {
+            (user, auto) = (_user, _auto);
+            (_user, _auto) = (null, false); // also when nothing is pending: a "next"+"previous" that cancelled out
             if (!HasPendingLocked()) return false;
             (target, steps, refresh, stale, deviceProfile, dpiSteps) = (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps);
             (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
@@ -166,6 +201,17 @@ public sealed class ProfileWorker : IDisposable
             ListDevices(rescan, devicesRequest);
             if (rescan) refresh = true;
         }
+
+        // A user batch if a UserSwitch is pending, else automatic when the target came from RequestAutoProfile.
+        auto &= user is null;
+        // The only skip: an automatic target equal to the last confirmed profile (e.g. a coalesced Alt-Tab A→B→A).
+        // Decided here, against the confirmed state, because the UI's last-shown state can be stale.
+        if (auto && steps == 0 && target is int t && t == _lastState?.CurrentProfile)
+        {
+            _log?.Write(LogLevel.Debug, $"Already on profile {t}; not switching.");
+            target = null;
+        }
+        var switching = target is not null || steps != 0;
 
         if (!HasWork(target, steps, refresh, stale, deviceProfile, dpiSteps)) return true;
 
@@ -193,7 +239,12 @@ public sealed class ProfileWorker : IDisposable
 
             if (state is null) return true;
             _lastState = state;
-            status = WorkerStatus.Reachable(state);
+            // Only a successful switch carries User/Automatic: a failure (catch blocks below) teaches nothing.
+            status = WorkerStatus.Reachable(state) with
+            {
+                User = switching ? user : null,
+                Automatic = switching && auto,
+            };
         }
         catch (ChosenDeviceNotFoundException ex)
         {
