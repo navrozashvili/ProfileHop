@@ -21,7 +21,6 @@ public sealed record DeviceProbe(
 /// <param name="TypeFallback">True when no candidate reported device type mouse (3) and the first device with
 /// 0x8100 was taken instead (automatic choice only).</param>
 /// <param name="Key">Stable device key (<see cref="DeviceKey"/>).</param>
-/// <param name="PreferredDeviceMissing">A preferred device was configured but not found; this is the automatic choice.</param>
 public sealed record ConnectedMouse(
     HidDevice Device,
     ushort ProductId,
@@ -31,8 +30,7 @@ public sealed record ConnectedMouse(
     string? Name,
     byte? DeviceType,
     bool TypeFallback,
-    string Key,
-    bool PreferredDeviceMissing);
+    string Key);
 
 /// <summary>
 /// The mouse is in host mode (G HUB took over) and forceOnboardMode is off: setCurrentProfile would be accepted but
@@ -44,17 +42,46 @@ public sealed class HostModeException(ProfileState state)
     public ProfileState State { get; } = state;
 }
 
-public sealed class MouseNotFoundException(IReadOnlyList<DeviceProbe> probes)
-    : Exception($"No HID++ 2.0 device with OnboardProfiles (0x8100) found ({probes.Count} device indexes tried)")
+public class MouseNotFoundException : Exception
 {
-    public IReadOnlyList<DeviceProbe> Probes { get; } = probes;
+    public MouseNotFoundException(IReadOnlyList<DeviceProbe> probes)
+        : this($"No HID++ 2.0 device with OnboardProfiles (0x8100) found ({probes.Count} device indexes tried)", probes, null)
+    {
+    }
+
+    protected MouseNotFoundException(string message, IReadOnlyList<DeviceProbe> probes, Exception? inner)
+        : base(message, inner)
+    {
+        Probes = probes;
+    }
+
+    public IReadOnlyList<DeviceProbe> Probes { get; }
+}
+
+/// <summary>
+/// The device chosen in config (<see cref="MouseController.PreferredDevice"/>) is not reachable: its receiver is absent,
+/// the receiver says the device is not connected (asleep, off), or it answered and then dropped off. Nothing was sent to
+/// any other device. The next call retries; <see cref="IProfileSwitcher.DeviceArrived"/> fires when its receiver reports
+/// it back online.
+/// </summary>
+public sealed class ChosenDeviceNotFoundException(string deviceKey, IReadOnlyList<DeviceProbe> probes, Exception? inner = null)
+    : MouseNotFoundException($"{Core.DeviceKey.NameOf(deviceKey)} not found (asleep or off?)", probes, inner)
+{
+    /// <summary>The configured key, e.g. <c>C54D/PRO X2 SUPERSTRIKE</c>.</summary>
+    public string DeviceKey { get; } = deviceKey;
+
+    /// <summary>The name part of the key, e.g. <c>PRO X2 SUPERSTRIKE</c>.</summary>
+    public string DeviceName { get; } = Core.DeviceKey.NameOf(deviceKey);
 }
 
 /// <summary>
 /// Finds the mouse (all HID++ devices, indexes 0x01..0x06 then 0xFF), keeps the connection until a failure or
 /// <see cref="MarkStale"/>, and implements the tray's <see cref="IProfileSwitcher"/>. Device choice: the
-/// <see cref="PreferredDevice"/> if set and present, else automatic (first device type mouse, else first device with
-/// 0x8100). Thread-safe; calls block.
+/// <see cref="PreferredDevice"/> if set — only that device, never another one: only receivers with the key's PID are
+/// opened and its last index is tried first; if it is not there <see cref="ChosenDeviceNotFoundException"/> is thrown
+/// and its receiver stays open (read thread only) until a <see cref="DeviceConnection"/> notification says the device
+/// is back, which raises <see cref="DeviceArrived"/>. Automatic (no preference): first device type mouse, else first
+/// device with 0x8100. Thread-safe; calls block.
 /// </summary>
 public sealed class MouseController : IProfileSwitcher
 {
@@ -62,6 +89,9 @@ public sealed class MouseController : IProfileSwitcher
 
     private const byte OnboardModeOnboard = 1;
     private const byte OnboardModeHost = 2;
+
+    /// <summary>HID++ 1.0 error 8: nothing paired at that index (hidpp10_constants.py ErrorCode.UNKNOWN_DEVICE).</summary>
+    private const byte UnknownDevice = 0x08;
 
     private readonly IHidDeviceSource _source;
     private readonly TimeSpan? _timeout;
@@ -71,6 +101,9 @@ public sealed class MouseController : IProfileSwitcher
     private Connection? _connection;
     private IReadOnlyList<DeviceProbe> _lastProbe = [];
     private string? _preferredDevice;
+    private byte? _preferredIndex; // device index the preferred device was last connected at (cheap first probe)
+    private volatile Opened? _waiting; // the preferred device's receiver, kept open while the device is unreachable
+    private volatile int _waitIndex = -1; // index to wait for on _waiting; -1 = any
     private bool _forceOnboardMode;
     private byte _ping = 0x5A;
     private bool _disposed;
@@ -86,6 +119,9 @@ public sealed class MouseController : IProfileSwitcher
     }
 
     public event Action<int>? ProfileChangedByDevice;
+
+    /// <inheritdoc/>
+    public event Action? DeviceArrived;
 
     /// <summary>Every device index tried by the most recent scan.</summary>
     public IReadOnlyList<DeviceProbe> LastProbe
@@ -110,7 +146,10 @@ public sealed class MouseController : IProfileSwitcher
         lock (_lock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _preferredDevice = string.IsNullOrWhiteSpace(preferredDevice) ? null : preferredDevice.Trim();
+            string? preference = string.IsNullOrWhiteSpace(preferredDevice) ? null : preferredDevice.Trim();
+            if (!string.Equals(preference, _preferredDevice, StringComparison.OrdinalIgnoreCase))
+                _preferredIndex = null;
+            _preferredDevice = preference;
             _forceOnboardMode = forceOnboardMode;
             CloseConnection();
         }
@@ -315,7 +354,7 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         c.ProfileNames ??= ReadProfileNames(c, enabled);
-        return new ProfileState(mode, current, enabled, dpi, c.Info.PreferredDeviceMissing) { ProfileNames = c.ProfileNames };
+        return new ProfileState(mode, current, enabled, dpi) { ProfileNames = c.ProfileNames };
     }
 
     /// <summary>
@@ -373,6 +412,14 @@ public sealed class MouseController : IProfileSwitcher
             {
                 return operation(c);
             }
+            catch (DeviceUnreachableException ex) when (_preferredDevice is { } preference && ReferenceEquals(_connection, c))
+            {
+                // The receiver says the chosen device dropped off (asleep, off): keep its receiver open and wait for it.
+                _connection = null;
+                _log?.Write(LogLevel.Info, $"Chosen device '{preference}' stopped answering ({ex.Message}); waiting for it to reconnect.");
+                StartWaiting(c.Opened, c.Info.DeviceIndex);
+                throw new ChosenDeviceNotFoundException(preference, [], ex);
+            }
             catch (Exception ex) when (IsTransportFailure(ex))
             {
                 CloseConnection();
@@ -429,6 +476,29 @@ public sealed class MouseController : IProfileSwitcher
         Connection? c = _connection;
         _connection = null;
         c?.Dispose();
+        Opened? waiting = _waiting;
+        _waiting = null;
+        waiting?.Dispose();
+    }
+
+    /// <summary>Keeps the chosen device's receiver open; its read thread reports the device coming back (no polling).</summary>
+    private void StartWaiting(Opened receiver, byte? index)
+    {
+        _waitIndex = index ?? -1;
+        _waiting = receiver;
+        receiver.Client.Notification += msg => OnReceiverNotification(receiver, msg);
+    }
+
+    /// <summary>Pump thread: the receiver reports a device link change. Only acts while waiting for the chosen device.</summary>
+    private void OnReceiverNotification(Opened receiver, HidppMessage msg)
+    {
+        if (!ReferenceEquals(_waiting, receiver) || !DeviceConnection.TryDecode(msg, out bool linkEstablished) || !linkEstablished)
+            return;
+        int index = _waitIndex;
+        if (index >= 0 && msg.DeviceIndex != index)
+            return;
+        _log?.Write(LogLevel.Info, $"Receiver reports device 0x{msg.DeviceIndex:X2} connected; reconnecting to the chosen device.");
+        DeviceArrived?.Invoke();
     }
 
     private Connection Scan(bool fullScan)
@@ -436,9 +506,14 @@ public sealed class MouseController : IProfileSwitcher
         var probes = new List<DeviceProbe>();
         var open = new List<Opened>();
         string? preference = _preferredDevice;
+        // The key's PID is the receiver's (or the wired mouse's): a chosen device can only be behind that PID, so other
+        // devices are not even opened (a rescan for the device list still probes them, read-only).
+        ushort? chosenPid = preference is null ? null : DeviceKey.ProductIdOf(preference);
         Candidate? preferred = null;
         Candidate? mouse = null;
         Candidate? firstCandidate = null;
+        Opened? waitOn = null; // the chosen device's receiver, to wait on if the device is not there
+        byte? waitIndex = null;
 
         try
         {
@@ -446,6 +521,9 @@ public sealed class MouseController : IProfileSwitcher
             {
                 ThrowIfCancelled();
                 ushort pid = device.Collections.Count > 0 ? device.Collections[0].ProductId : (ushort)0;
+                bool chosenReceiver = chosenPid == pid;
+                if (!fullScan && chosenPid is not null && !chosenReceiver)
+                    continue;
                 if (HidReports.Unusable(device.Collections) is { } unusable)
                 {
                     probes.Add(new DeviceProbe(device, pid, 0, null, false, null, null, unusable));
@@ -467,13 +545,22 @@ public sealed class MouseController : IProfileSwitcher
                 var opened = new Opened(device, transport, client);
                 open.Add(opened);
                 var found = new List<Candidate>();
+                byte? lastIndex = chosenReceiver ? _preferredIndex : null;
                 try
                 {
-                    foreach (byte index in ProbeOrder)
+                    foreach (byte index in lastIndex is byte first ? [first, .. ProbeOrder.Where(i => i != first)] : ProbeOrder)
                     {
                         ThrowIfCancelled();
-                        (DeviceProbe probe, Candidate? candidate) = ProbeIndex(opened, pid, index);
+                        (DeviceProbe probe, Candidate? candidate, byte? hidpp10Error) = ProbeIndex(opened, pid, index);
                         probes.Add(probe);
+                        if (index == lastIndex && hidpp10Error is { } error && error != UnknownDevice)
+                        {
+                            // The receiver says the chosen device is paired here but not connected (asleep, off):
+                            // don't probe the other indexes, wait for this one.
+                            waitIndex = index;
+                            if (!fullScan)
+                                break;
+                        }
                         if (candidate is null)
                             continue;
                         found.Add(candidate);
@@ -485,7 +572,11 @@ public sealed class MouseController : IProfileSwitcher
                 {
                     probes.Add(new DeviceProbe(device, pid, 0, null, false, null, null, "transport failed: " + ex.Message));
                     found.Clear();
+                    chosenReceiver = false; // nothing to wait on
                 }
+
+                if (chosenReceiver)
+                    waitOn ??= opened;
 
                 firstCandidate ??= found.FirstOrDefault();
                 mouse ??= found.FirstOrDefault(c => c.IsMouse);
@@ -512,12 +603,22 @@ public sealed class MouseController : IProfileSwitcher
             }
         }
 
-        Candidate? chosen = preferred ?? mouse ?? firstCandidate;
-        bool preferenceMissing = preference is not null && preferred is null;
+        // A chosen device is the only one ever used: no fallback to another device.
+        Candidate? chosen = preference is not null ? preferred : mouse ?? firstCandidate;
+        Opened? keep = chosen?.Opened ?? (preference is not null ? waitOn : null);
         foreach (Opened o in open)
         {
-            if (chosen is null || !ReferenceEquals(o, chosen.Opened))
+            if (!ReferenceEquals(o, keep))
                 o.Dispose();
+        }
+
+        if (chosen is null && preference is not null)
+        {
+            _log?.Write(LogLevel.Warning, $"Chosen device '{preference}' not found ({probes.Count} device indexes tried)" +
+                (waitOn is null ? "; its receiver is not plugged in." : "; waiting for its receiver to report it."));
+            if (waitOn is not null)
+                StartWaiting(waitOn, waitIndex ?? _preferredIndex);
+            throw new ChosenDeviceNotFoundException(preference, probes);
         }
 
         if (chosen is null)
@@ -525,6 +626,9 @@ public sealed class MouseController : IProfileSwitcher
             _log?.Write(LogLevel.Info, $"No device with OnboardProfiles found ({probes.Count} device indexes tried).");
             throw new MouseNotFoundException(probes);
         }
+
+        if (preference is not null)
+            _preferredIndex = chosen.Probe.DeviceIndex;
 
         var info = new ConnectedMouse(
             chosen.Opened.Device,
@@ -535,17 +639,15 @@ public sealed class MouseController : IProfileSwitcher
             chosen.Probe.Name,
             chosen.Probe.DeviceType,
             TypeFallback: preferred is null && !chosen.IsMouse,
-            chosen.Key,
-            preferenceMissing);
+            chosen.Key);
 
-        if (preferenceMissing)
-            _log?.Write(LogLevel.Warning, $"Chosen device '{preference}' not found; using {info.Key} (automatic).");
         _log?.Write(LogLevel.Info, $"Connected to {info.Key} at index 0x{info.DeviceIndex:X2}, HID++ {info.Version}" +
             (preferred is not null ? " (chosen device)." : info.TypeFallback ? " (no mouse type found, first 0x8100 device)." : " (automatic)."));
         return new Connection(this, chosen.Opened, chosen.Device, info);
     }
 
-    private (DeviceProbe, Candidate?) ProbeIndex(Opened opened, ushort pid, byte index)
+    /// <summary>Probes one index; the third value is the HID++ 1.0 error code when the receiver answered 0x8F.</summary>
+    private (DeviceProbe, Candidate?, byte?) ProbeIndex(Opened opened, ushort pid, byte index)
     {
         var device = new HidppDevice(opened.Client, index);
         ProtocolVersion version;
@@ -555,19 +657,19 @@ public sealed class MouseController : IProfileSwitcher
         }
         catch (DeviceUnreachableException ex)
         {
-            return (Skipped($"HID++ 1.0 error 0x{ex.Hidpp10Error:X2}"), null);
+            return (Skipped($"HID++ 1.0 error 0x{ex.Hidpp10Error:X2}"), null, ex.Hidpp10Error);
         }
         catch (TimeoutException)
         {
-            return (Skipped("no reply"), null);
+            return (Skipped("no reply"), null, null);
         }
         catch (Exception ex) when (ex is HidppException or HidppProtocolException)
         {
-            return (Skipped(ex.Message), null);
+            return (Skipped(ex.Message), null, null);
         }
 
         if (version.Major < 2)
-            return (new DeviceProbe(opened.Device, pid, index, version, false, null, null, "HID++ < 2.0"), null);
+            return (new DeviceProbe(opened.Device, pid, index, version, false, null, null, "HID++ < 2.0"), null, null);
 
         bool hasOnboard;
         try
@@ -576,7 +678,7 @@ public sealed class MouseController : IProfileSwitcher
         }
         catch (Exception ex) when (ex is HidppException or HidppProtocolException or TimeoutException or DeviceUnreachableException)
         {
-            return (new DeviceProbe(opened.Device, pid, index, version, false, null, null, "getFeature failed: " + ex.Message), null);
+            return (new DeviceProbe(opened.Device, pid, index, version, false, null, null, "getFeature failed: " + ex.Message), null, null);
         }
 
         byte? type = null;
@@ -588,7 +690,7 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         var probe = new DeviceProbe(opened.Device, pid, index, version, hasOnboard, type, name, null);
-        return (probe, hasOnboard ? new Candidate(opened, device, probe) : null);
+        return (probe, hasOnboard ? new Candidate(opened, device, probe) : null, null);
 
         DeviceProbe Skipped(string why) => new(opened.Device, pid, index, null, false, null, null, why);
     }
@@ -686,6 +788,7 @@ public sealed class MouseController : IProfileSwitcher
         }
 
         public HidppClient Client => _opened.Client;
+        public Opened Opened => _opened;
         public HidppDevice Device { get; }
         public ConnectedMouse Info { get; }
         public OnboardProfilesFeature Onboard { get; }

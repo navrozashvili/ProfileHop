@@ -66,10 +66,11 @@ public class TrayTextTests
     }
 
     [Fact]
-    public void Missing_preferred_device_is_flagged()
+    public void Missing_chosen_device_is_named_with_a_hint()
     {
-        var status = WorkerStatus.Reachable(new ProfileState(1, 2, [1, 2], null, PreferredDeviceMissing: true));
-        Assert.Equal("ProfileHop: Game (profile 2), chosen device not found", TrayText.Tooltip(status, Names));
+        var status = WorkerStatus.Unreachable("not found") with { MissingDevice = "PRO X2 SUPERSTRIKE" };
+        Assert.Equal("ProfileHop: PRO X2 SUPERSTRIKE not found (asleep or off? move it)", TrayText.Tooltip(status, Names));
+        Assert.Equal("?", TrayText.IconGlyph(status));
     }
 
     private static readonly KnownDevice Mouse = new("C54D/PRO X2 SUPERSTRIKE", "PRO X2 SUPERSTRIKE (receiver C54D)", 3, true);

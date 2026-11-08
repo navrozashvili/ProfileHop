@@ -9,8 +9,9 @@ namespace ProfileHop.Core.Tray;
 /// is sent to the mouse.
 /// Failures: <see cref="HostModeException"/> shows the host-mode state; a device rejection (HID++ error, unconfirmed
 /// switch) keeps the last known state and sets <see cref="WorkerStatus.Notice"/>; anything else (timeout, transport
-/// closed, mouse asleep or not found) turns into <see cref="WorkerStatusKind.Unreachable"/>. The next request retries
-/// (the switcher reconnects lazily).
+/// closed, mouse asleep or not found) turns into <see cref="WorkerStatusKind.Unreachable"/>; for
+/// <see cref="ChosenDeviceNotFoundException"/> with <see cref="WorkerStatus.MissingDevice"/> set. The next request retries
+/// (the switcher reconnects lazily), and so does <see cref="IProfileSwitcher.DeviceArrived"/> (one reconnect + refresh).
 /// </summary>
 public sealed class ProfileWorker : IDisposable
 {
@@ -47,6 +48,7 @@ public sealed class ProfileWorker : IDisposable
         _switcher = switcher;
         _log = log;
         _switcher.ProfileChangedByDevice += OnProfileChangedByDevice;
+        _switcher.DeviceArrived += OnDeviceArrived;
     }
 
     /// <summary>Raised on the worker thread after every processed batch (switch, refresh, failure).</summary>
@@ -193,6 +195,10 @@ public sealed class ProfileWorker : IDisposable
             _lastState = state;
             status = WorkerStatus.Reachable(state);
         }
+        catch (ChosenDeviceNotFoundException ex)
+        {
+            status = Unreachable(ex) with { MissingDevice = ex.DeviceName };
+        }
         catch (HostModeException ex)
         {
             _log?.Write(LogLevel.Warning, $"Not switching: {ex.Message}");
@@ -225,6 +231,7 @@ public sealed class ProfileWorker : IDisposable
             Monitor.PulseAll(_lock);
         }
         _switcher.ProfileChangedByDevice -= OnProfileChangedByDevice;
+        _switcher.DeviceArrived -= OnDeviceArrived;
         // A switcher call can take a while (a rescan probes every receiver index): cancel it so it stops at the next
         // probe, and still don't hang exit on it.
         _switcher.Cancel();
@@ -306,6 +313,9 @@ public sealed class ProfileWorker : IDisposable
     }
 
     private void OnProfileChangedByDevice(int profile) => Post(() => _deviceProfile = profile);
+
+    /// <summary>The chosen device is back online: reconnect once (same path as a device change).</summary>
+    private void OnDeviceArrived() => Post(() => _stale = true);
 
     private void Post(Action update)
     {
