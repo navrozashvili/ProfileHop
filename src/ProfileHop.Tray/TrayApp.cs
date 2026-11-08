@@ -382,7 +382,9 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         }
         else if (status.Kind == WorkerStatusKind.Unreachable && previous.Kind != WorkerStatusKind.Unreachable && _config.Balloon)
         {
-            ShowBalloon("ProfileHop", "Mouse not reachable. The next hotkey press retries.", warning: true);
+            ShowBalloon("ProfileHop", status.MissingDevice is null
+                ? "Mouse not reachable. The next hotkey press retries."
+                : $"{Tooltip()["ProfileHop: ".Length..]}. The next hotkey press retries.", warning: true);
         }
     }
 
@@ -550,18 +552,21 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     private void SelectDevice(string? key)
     {
-        if (string.Equals(key, _config.Device, StringComparison.OrdinalIgnoreCase)) return;
-        _config.Device = key;
-        try
+        if (!string.Equals(key, _config.Device, StringComparison.OrdinalIgnoreCase))
         {
-            ConfigStore.Save(_configPath, _config);
+            _config.Device = key;
+            try
+            {
+                ConfigStore.Save(_configPath, _config);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
+                ShowBalloon("ProfileHop", $"Device changed but could not be saved: {ex.Message}", warning: true);
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.Write(LogLevel.Error, $"Saving config failed: {ex.Message}");
-            ShowBalloon("ProfileHop", $"Device changed but could not be saved: {ex.Message}", warning: true);
-        }
-        _worker.Reconfigure(key, _config.ForceOnboardMode); // drops the connection; the worker reconnects and refreshes
+        // Always, even when the entry was already checked: drops the connection; the worker reconnects and refreshes.
+        _worker.Reconfigure(key, _config.ForceOnboardMode);
     }
 
     private static void Append(HMENU menu, MENU_ITEM_FLAGS flags, nuint id, string? text)

@@ -133,4 +133,39 @@ public class HidppMessageTests
         Assert.True(e10.IsHidpp10Error);
         Assert.False(e10.IsNotification);
     }
+
+    // ---- receiver device connection notification (HID++ 1.0 sub-id 0x41, docs/protocol-verification.md) ----
+
+    private static HidppMessage Decode(params byte[] frame)
+    {
+        Assert.True(HidppMessage.TryDecode(frame, out HidppMessage m));
+        return m;
+    }
+
+    [Theory]
+    [InlineData(0x04, 0x00, true)]  // protocol 0x04, link bit clear = established
+    [InlineData(0x04, 0x40, false)] // flags bit 0x40 = link not established
+    [InlineData(0x0C, 0x20, true)]  // the encrypted bit alone does not matter
+    [InlineData(0x10, 0x60, false)] // Bolt: still the 0x40 bit
+    [InlineData(0x02, 0x40, true)]  // old 27 MHz protocol: always established
+    public void Connection_notification_decodes_link_state(byte protocol, byte flags, bool established)
+    {
+        HidppMessage m = Decode(0x10, 0x01, 0x41, protocol, flags, 0x8A, 0x40);
+
+        Assert.True(DeviceConnection.TryDecode(m, out bool link));
+        Assert.Equal(established, link);
+    }
+
+    [Fact]
+    public void Connection_notification_needs_short_report_sub_id_0x41_and_a_protocol()
+    {
+        Assert.False(DeviceConnection.TryDecode(Decode(0x10, 0x01, 0x41, 0x00, 0x00, 0x8A, 0x40), out _)); // protocol 0: unknown
+        Assert.False(DeviceConnection.TryDecode(Decode(0x10, 0x01, 0x40, 0x02, 0x00, 0x00, 0x00), out _)); // 0x40 = unpaired
+        var longFrame = new byte[20];
+        longFrame[0] = 0x11;
+        longFrame[1] = 0x01;
+        longFrame[2] = 0x41;
+        longFrame[3] = 0x04;
+        Assert.False(DeviceConnection.TryDecode(Decode(longFrame), out _)); // HID++ 2.0 frame at feature index 0x41
+    }
 }

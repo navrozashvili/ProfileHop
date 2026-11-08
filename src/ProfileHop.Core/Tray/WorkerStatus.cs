@@ -19,6 +19,9 @@ public sealed record WorkerStatus(WorkerStatusKind Kind, ProfileState? State, st
     /// <summary>One-off message for a balloon (e.g. the mouse rejected a switch); the status itself stays reachable.</summary>
     public string? Notice { get; init; }
 
+    /// <summary>Unreachable because the device chosen in config is not there: its name (e.g. <c>PRO X2 SUPERSTRIKE</c>).</summary>
+    public string? MissingDevice { get; init; }
+
     public bool IsReachable => Kind == WorkerStatusKind.Reachable;
 }
 
