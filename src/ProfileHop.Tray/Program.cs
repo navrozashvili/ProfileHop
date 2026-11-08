@@ -11,13 +11,13 @@ internal static class Program
 {
     private const uint ErrorAlreadyExists = 183;
 
-    /// <summary>
-    /// The one seam the orchestrator wires after merging the mouse side:
-    /// <c>return new MouseController(new WindowsHidDeviceSource());</c> (pass <paramref name="config"/>.ForceOnboardMode /
-    /// .Device and <paramref name="log"/> if the controller accepts them).
-    /// </summary>
-    internal static IProfileSwitcher CreateSwitcher(AppConfig config, ILog log) =>
-        new MouseController(new ProfileHop.Core.Hid.WindowsHidDeviceSource());
+    /// <summary>The real switcher: chosen device and forceOnboardMode from config, connect decisions to the log.</summary>
+    internal static IProfileSwitcher CreateSwitcher(AppConfig config, ILog log)
+    {
+        var controller = new MouseController(new ProfileHop.Core.Hid.WindowsHidDeviceSource(), log: log);
+        controller.Configure(config.Device, config.ForceOnboardMode);
+        return controller;
+    }
 
     /// <summary>
     /// Usage: <c>profilehop [--no-mouse] [--data-dir &lt;folder&gt;]</c>. <c>--no-mouse</c> runs the UI with a switcher
@@ -85,6 +85,10 @@ internal static class Program
         public int NextDpiSlot() => throw new InvalidOperationException("Started with --no-mouse.");
 
         public void MarkStale() { }
+
+        public void Configure(string? preferredDevice, bool forceOnboardMode) { }
+
+        public IReadOnlyList<KnownDevice> ListDevices(bool rescan) => [];
 
         public void Dispose() { }
     }

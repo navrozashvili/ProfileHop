@@ -207,6 +207,223 @@ public sealed class MouseControllerTests : IDisposable
         Assert.Equal(2, _source.EnumerateCount);
     }
 
+    // ---- device preference ----
+
+    private SimulatedDevice AddSecondReceiverMouse(string name = "G502 X PLUS", ushort pid = 0xC547)
+    {
+        var other = new SimulatedDevice { Name = name };
+        var rx = new SimulatedReceiver();
+        rx.Paired[0x01] = other;
+        _source.Add("receiver-" + pid.ToString("X4"), pid, rx.Handle);
+        return other;
+    }
+
+    [Fact]
+    public void Device_key_is_pid_hex_slash_name()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Equal("C54D/PRO X2 SUPERSTRIKE", Controller.Connect().Key);
+        Assert.Equal("C54D/PRO X2 SUPERSTRIKE", DeviceKey.Format(0xC54D, "PRO X2 SUPERSTRIKE", 0x01));
+        Assert.Equal("C54D/#02", DeviceKey.Format(0xC54D, null, 0x02));
+    }
+
+    [Fact]
+    public void Preference_picks_matching_device_over_first_mouse()
+    {
+        AddReceiverWithMouseAt(0x01);
+        AddSecondReceiverMouse();
+        Controller.Configure("C547/G502 X PLUS", forceOnboardMode: false);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0xC547, m.ProductId);
+        Assert.Equal("G502 X PLUS", m.Name);
+        Assert.False(m.PreferredDeviceMissing);
+        Assert.False(Controller.GetState().PreferredDeviceMissing);
+    }
+
+    [Fact]
+    public void Preference_matches_case_insensitively()
+    {
+        AddReceiverWithMouseAt(0x01);
+        AddSecondReceiverMouse();
+        Controller.Configure("c547/g502 x plus", forceOnboardMode: false);
+
+        Assert.Equal(0xC547, Controller.Connect().ProductId);
+    }
+
+    [Fact]
+    public void Preference_can_pick_a_non_mouse_device_with_0x8100()
+    {
+        _receiver.Paired[0x01] = Keyboard();
+        AddReceiverWithMouseAt(0x02);
+        Controller.Configure("C54D/G915 KEYBOARD", forceOnboardMode: false);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0x01, m.DeviceIndex);
+        Assert.False(m.TypeFallback);
+    }
+
+    [Fact]
+    public void Preference_stops_scan_once_found()
+    {
+        AddReceiverWithMouseAt(0x01);
+        AddSecondReceiverMouse();
+        Controller.Configure("C54D/PRO X2 SUPERSTRIKE", forceOnboardMode: false);
+
+        Controller.Connect();
+
+        Assert.Single(_source.Opened);
+    }
+
+    [Fact]
+    public void Missing_preference_falls_back_to_automatic_and_flags_it()
+    {
+        AddReceiverWithMouseAt(0x01);
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        _controller = new MouseController(_source, Timeout, log: log);
+        Controller.Configure("C54D/SOMETHING ELSE", forceOnboardMode: false);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal("C54D/PRO X2 SUPERSTRIKE", m.Key);
+        Assert.True(m.PreferredDeviceMissing);
+        Assert.True(Controller.GetState().PreferredDeviceMissing);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Warning && l.Message.Contains("C54D/SOMETHING ELSE"));
+    }
+
+    [Fact]
+    public void Configure_drops_connection_and_next_call_uses_new_preference()
+    {
+        AddReceiverWithMouseAt(0x01);
+        AddSecondReceiverMouse();
+        Assert.Equal(0xC54D, Controller.Connect().ProductId);
+        FakeHidTransport first = _source.Opened.Single().Transport;
+
+        Controller.Configure("C547/G502 X PLUS", forceOnboardMode: false);
+
+        Assert.True(first.IsDisposed);
+        Assert.Equal(0xC547, Controller.Connect().ProductId);
+        Assert.Equal("C547/G502 X PLUS", Controller.PreferredDevice);
+    }
+
+    [Fact]
+    public void Connect_logs_the_chosen_device()
+    {
+        AddReceiverWithMouseAt(0x01);
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        _controller = new MouseController(_source, Timeout, log: log);
+
+        Controller.Connect();
+
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Info && l.Message.Contains("C54D/PRO X2 SUPERSTRIKE"));
+    }
+
+    // ---- device list ----
+
+    [Fact]
+    public void ListDevices_without_rescan_does_not_probe()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Empty(Controller.ListDevices(rescan: false));
+        Assert.Equal(0, _source.EnumerateCount);
+    }
+
+    [Fact]
+    public void ListDevices_returns_qualifying_devices_from_last_scan()
+    {
+        _receiver.Paired[0x01] = Keyboard();
+        var hidpp1 = new SimulatedDevice { Major = 1, Minor = 0, Name = "OLD" };
+        _receiver.Paired[0x02] = hidpp1;
+        AddReceiverWithMouseAt(0x03);
+        Controller.Connect();
+
+        IReadOnlyList<KnownDevice> devices = Controller.ListDevices(rescan: false);
+
+        Assert.Equal(2, devices.Count);
+        Assert.Equal(new KnownDevice("C54D/G915 KEYBOARD", "G915 KEYBOARD (receiver C54D)", 0, false), devices[0]);
+        Assert.Equal(new KnownDevice("C54D/PRO X2 SUPERSTRIKE", "PRO X2 SUPERSTRIKE (receiver C54D)", 3, true), devices[1]);
+    }
+
+    [Fact]
+    public void ListDevices_rescan_probes_every_receiver_and_keeps_preference()
+    {
+        AddReceiverWithMouseAt(0x01);
+        AddSecondReceiverMouse();
+        Controller.Connect(); // stops at the first mouse
+        Assert.Single(Controller.ListDevices(rescan: false));
+
+        IReadOnlyList<KnownDevice> devices = Controller.ListDevices(rescan: true);
+
+        Assert.Equal(["C54D/PRO X2 SUPERSTRIKE", "C547/G502 X PLUS"], devices.Select(d => d.Key));
+        Assert.True(devices[0].IsActive);
+        Assert.Equal(0xC54D, Controller.Connect().ProductId);
+    }
+
+    [Fact]
+    public void ListDevices_rescan_with_nothing_found_returns_empty_list()
+    {
+        _source.Add("receiver-C53A", 0xC53A, new SimulatedReceiver().Handle);
+
+        Assert.Empty(Controller.ListDevices(rescan: true));
+    }
+
+    [Fact]
+    public void Wired_device_display_name_says_usb()
+    {
+        var wired = new SimulatedDevice();
+        _source.Add("wired", 0xC0A1, req => req[1] == 0xFF ? wired.Handle(req) : []);
+        Controller.Connect();
+
+        Assert.Equal("PRO X2 SUPERSTRIKE (USB C0A1)", Controller.ListDevices(rescan: false).Single().DisplayName);
+    }
+
+    // ---- onboard mode ----
+
+    [Fact]
+    public void Force_onboard_mode_switches_host_mode_mouse_to_onboard_on_connect()
+    {
+        _mouse.OnboardMode = 2;
+        AddReceiverWithMouseAt(0x01);
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        _controller = new MouseController(_source, Timeout, log: log);
+        Controller.Configure(null, forceOnboardMode: true);
+
+        Controller.Connect();
+
+        Assert.Equal(1, _mouse.OnboardMode);
+        var set = Assert.Single(_mouse.Calls, c => c.Function == 1);
+        Assert.Equal(1, set.Params[0]);
+        Assert.Equal(1, Controller.GetState().OnboardMode);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Info && l.Message.Contains("onboard mode"));
+    }
+
+    [Fact]
+    public void Force_onboard_mode_leaves_onboard_mouse_alone()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Configure(null, forceOnboardMode: true);
+
+        Controller.Connect();
+
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function == 1);
+    }
+
+    [Fact]
+    public void Without_force_host_mode_is_left_alone()
+    {
+        _mouse.OnboardMode = 2;
+        AddReceiverWithMouseAt(0x01);
+
+        Controller.Connect();
+
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function == 1);
+        Assert.Equal(2, Controller.GetState().OnboardMode);
+    }
+
     // ---- state / switching ----
 
     [Fact]
