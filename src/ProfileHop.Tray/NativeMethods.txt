@@ -55,6 +55,7 @@ PBT_APMRESUMEAUTOMATIC
 NIN_SELECT
 NOTIFYICON_VERSION_4
 WM_COMMAND
+WM_INITMENUPOPUP
 WM_SETFONT
 // Hotkeys dialog (created only while open)
 InitCommonControlsEx
