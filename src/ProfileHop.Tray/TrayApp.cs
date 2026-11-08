@@ -262,6 +262,9 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     private void OnAppChanged(string app)
     {
+        // Same app back in front (e.g. after the desktop or taskbar): nothing to do. Startup, reconnect, reload and
+        // the menu toggles call ApplyAppProfile directly.
+        if (string.Equals(app, _currentApp, StringComparison.Ordinal)) return;
         _currentApp = app;
         ApplyAppProfile(app);
     }

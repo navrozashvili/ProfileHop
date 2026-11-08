@@ -22,11 +22,12 @@ public sealed class ProfileWorker : IDisposable
     private Thread? _thread;
     private bool _disposed;
 
-    // Pending work, guarded by _lock.
-    private int? _target;         // absolute profile requested
+    // Pending work, guarded by _lock. The user slot (_target/_steps/_user) and the automatic slot (_autoTarget) are kept
+    // apart so an automatic request never discards a pending user switch; a pending user switch runs first.
+    private int? _target;         // absolute profile requested by the user (hotkey, menu, CLI)
     private int _steps;           // net "next" (+1) / "previous" (−1) presses on top of _target (or the current profile)
-    private UserSwitch? _user;    // the latest user request's switch; cleared by RequestAutoProfile
-    private bool _auto;           // _target came from RequestAutoProfile
+    private UserSwitch? _user;    // the latest user request's switch
+    private int? _autoTarget;     // the latest RequestAutoProfile target
     private bool _refresh;
     private bool _stale;
     private int? _deviceProfile;
@@ -99,43 +100,41 @@ public sealed class ProfileWorker : IDisposable
 
     /// <summary>
     /// Switches to <paramref name="profile"/>. <paramref name="user"/> (replacing any pending one) marks it as the
-    /// user's own switch: the batch's success status carries it in <see cref="WorkerStatus.User"/>.
+    /// user's own switch: the batch's success status carries it in <see cref="WorkerStatus.User"/>. Supersedes a
+    /// pending automatic target (an older foreground change must not undo the user's choice).
     /// </summary>
     public void RequestProfile(int profile, UserSwitch? user = null) => Post(() =>
     {
         _target = profile;
         _steps = 0;
-        _auto = false;
+        _autoTarget = null;
         _user = user;
     });
 
-    /// <summary>One step forward from the pending target (user or automatic) or the current profile.</summary>
+    /// <summary>One step forward from the pending user target, else the pending automatic one, else the current profile.</summary>
     public void RequestNextProfile(UserSwitch? user = null) => Post(() =>
     {
+        TakeAutoTargetLocked();
         _steps++;
         _user = user;
     });
 
-    /// <summary>One step back from the pending target (user or automatic) or the current profile.</summary>
+    /// <summary>One step back from the pending user target, else the pending automatic one, else the current profile.</summary>
     public void RequestPreviousProfile(UserSwitch? user = null) => Post(() =>
     {
+        TakeAutoTargetLocked();
         _steps--;
         _user = user;
     });
 
     /// <summary>
-    /// The per-app profile for the new foreground app. Supersedes any pending user request (its
-    /// <see cref="UserSwitch"/> is dropped). Skipped on the worker thread when it equals the last confirmed profile,
-    /// so a fast A→B→A that coalesces back to the current profile sends nothing and publishes no status (unless a
-    /// refresh, reconnect or mouse-side profile change is pending in the same batch: then it is sent).
+    /// The per-app profile for the new foreground app. Kept apart from a pending user request: that one is sent first
+    /// (its own batch, carrying its <see cref="UserSwitch"/>), then this. Skipped on the worker thread when it equals
+    /// the last confirmed profile, so a fast A→B→A that coalesces back to the current profile sends nothing and
+    /// publishes no status (unless a refresh, reconnect or mouse-side profile change is pending in the same batch:
+    /// then it is sent).
     /// </summary>
-    public void RequestAutoProfile(int profile) => Post(() =>
-    {
-        _target = profile;
-        _steps = 0;
-        _auto = true;
-        _user = null;
-    });
+    public void RequestAutoProfile(int profile) => Post(() => _autoTarget = profile);
 
     public void RequestNextDpiSlot() => Post(() => _dpiSteps++);
 
@@ -180,11 +179,24 @@ public sealed class ProfileWorker : IDisposable
         (string? Device, bool ForceOnboard)? configure;
         lock (_lock)
         {
-            (user, auto) = (_user, _auto);
-            (_user, _auto) = (null, false); // also when nothing is pending: a "next"+"previous" that cancelled out
+            user = _user;
+            _user = null; // also when nothing is pending: a "next"+"previous" that cancelled out
             if (!HasPendingLocked()) return false;
-            (target, steps, refresh, stale, deviceProfile, dpiSteps) = (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps);
-            (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
+            auto = _target is null && _steps == 0;
+            if (auto)
+            {
+                // No user switch pending: this batch takes the automatic target (if any).
+                (target, steps, user) = (_autoTarget, 0, null);
+                _autoTarget = null;
+            }
+            else
+            {
+                // A user switch runs alone; a pending automatic target waits for the next batch.
+                (target, steps) = (_target, _steps);
+                (_target, _steps) = (null, 0);
+            }
+            (refresh, stale, deviceProfile, dpiSteps) = (_refresh, _stale, _deviceProfile, _dpiSteps);
+            (_refresh, _stale, _deviceProfile, _dpiSteps) = (false, false, null, 0);
             (configure, listDevices, rescan) = (_configure, _listDevices, _rescan);
             (_configure, _listDevices, _rescan) = (null, false, false);
             devicesRequest = _devicesRequest;
@@ -203,8 +215,6 @@ public sealed class ProfileWorker : IDisposable
             if (rescan) refresh = true;
         }
 
-        // A user batch if a UserSwitch is pending, else automatic when the target came from RequestAutoProfile.
-        auto &= user is null;
         // The only skip: an automatic target equal to the last confirmed profile (e.g. a coalesced Alt-Tab A→B→A).
         // Decided here, against the confirmed state, because the UI's last-shown state can be stale. Not when a
         // refresh, reconnect or mouse-side profile change is pending: the confirmed state may no longer hold.
@@ -384,7 +394,16 @@ public sealed class ProfileWorker : IDisposable
     }
 
     private bool HasPendingLocked() =>
-        HasWork(_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) || _configure is not null || _listDevices;
+        HasWork(_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) || _autoTarget is not null
+        || _configure is not null || _listDevices;
+
+    /// <summary>A user step with no user target pending counts from the pending automatic target, which it replaces.</summary>
+    private void TakeAutoTargetLocked()
+    {
+        if (_target is not null || _steps != 0 || _autoTarget is null) return;
+        _target = _autoTarget;
+        _autoTarget = null;
+    }
 
     private static bool HasWork(int? target, int steps, bool refresh, bool stale, int? deviceProfile, int dpiSteps) =>
         target is not null || steps != 0 || refresh || stale || deviceProfile is not null || dpiSteps > 0;

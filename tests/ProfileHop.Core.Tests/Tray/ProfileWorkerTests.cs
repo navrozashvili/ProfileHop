@@ -901,15 +901,88 @@ public class ProfileWorkerTests
     }
 
     [Fact]
-    public void AutoAfterUserClearsUserSwitch()
+    public void AutoAfterUserKeepsUserSwitchAndRunsNext()
     {
         var (worker, mouse, statuses) = Create();
+        mouse.Enabled = [1, 2, 3, 4];
 
         worker.RequestProfile(2, new("a", true));
         worker.RequestAutoProfile(4);
+
+        Assert.True(worker.ProcessPending());
+        Assert.Equal(["set 2"], mouse.Calls);
+        var user = Assert.Single(statuses);
+        Assert.Equal("a", user.User?.LearnFor);
+        Assert.False(user.Automatic);
+
+        Assert.True(worker.ProcessPending());
+        Assert.Equal(["set 2", "set 4"], mouse.Calls);
+        Assert.Equal(2, statuses.Count);
+        Assert.Null(statuses[1].User);
+        Assert.True(statuses[1].Automatic);
+        Assert.False(worker.ProcessPending());
+    }
+
+    [Fact]
+    public void PendingAutoTargetAfterUserIsSkippedWhenAlreadyThere()
+    {
+        var (worker, mouse) = Known(1);
+
+        worker.RequestProfile(2, new("a", true));
+        worker.RequestAutoProfile(2);
+        worker.ProcessPending();
         worker.ProcessPending();
 
-        Assert.Equal(["set 4"], mouse.Calls);
+        Assert.Equal(["set 2"], mouse.Calls);
+        Assert.False(worker.ProcessPending());
+    }
+
+    [Fact]
+    public void UserStepsAfterAutoKeepTheAutoTargetPending()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.Current = 1;
+        worker.RequestRefresh();
+        worker.ProcessPending();
+        mouse.Calls.Clear();
+        statuses.Clear();
+
+        worker.RequestNextProfile(new("a", true));
+        worker.RequestAutoProfile(3);
+        worker.RequestNextProfile(new("a", true));
+        worker.ProcessPending();
+        worker.ProcessPending();
+
+        // Both steps count from the current profile (1 → 3); the automatic 3 then matches and is skipped.
+        Assert.Equal(["set 3"], mouse.Calls);
+        Assert.Equal("a", Assert.Single(statuses).User?.LearnFor);
+    }
+
+    [Fact]
+    public void UserAbsoluteAfterAutoSupersedesIt()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestAutoProfile(4);
+        worker.RequestProfile(2, new("a", true));
+        worker.ProcessPending();
+
+        Assert.Equal(["set 2"], mouse.Calls);
+        Assert.Equal("a", Assert.Single(statuses).User?.LearnFor);
+        Assert.False(worker.ProcessPending());
+    }
+
+    [Fact]
+    public void AutoAfterCancelledUserStepsIsAutomaticWithoutUser()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestNextProfile(new("a", true));
+        worker.RequestPreviousProfile(new("a", true));
+        worker.RequestAutoProfile(3);
+        worker.ProcessPending();
+
+        Assert.Equal(["set 3"], mouse.Calls);
         var s = Assert.Single(statuses);
         Assert.Null(s.User);
         Assert.True(s.Automatic);
