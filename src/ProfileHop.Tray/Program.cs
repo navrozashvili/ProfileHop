@@ -51,7 +51,7 @@ internal static class Program
             using var switcher = noMouse ? new NoMouseSwitcher() : CreateSwitcher(loaded.Config, log);
             using var worker = new ProfileWorker(switcher, log) {
                 CycleOverride = loaded.Config.Cycle,
-                ConfiguredProfiles = [.. loaded.Config.Profiles.Select(p => p.Number)],
+                ConfiguredProfiles = ProfileDisplay.ConfiguredNumbers(loaded.Config),
             };
             var autostart = new Autostart(new RegistryRunKeyStore(), Environment.ProcessPath ?? "profilehop.exe");
 

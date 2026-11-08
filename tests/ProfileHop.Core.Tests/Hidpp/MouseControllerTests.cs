@@ -606,6 +606,162 @@ public sealed class MouseControllerTests : IDisposable
         Assert.Equal(0, Controller.NextDpiSlot());
     }
 
+    // Real PRO X2 SUPERSTRIKE sectors (profile format 0x08, layout inferred from device dumps).
+    private void UseRealFormat08Profiles(ushort profile, byte dpiIndex)
+    {
+        _mouse.ProfileFormat = 0x08;
+        _mouse.ProfileCount = 5;
+        foreach (ushort s in new ushort[] { 1, 2, 3, 4, 5 })
+            _mouse.Sectors[s] = Format08Fixture.Sector(s);
+        _mouse.CurrentProfile = profile;
+        _mouse.DpiIndex = dpiIndex;
+    }
+
+    private bool SentSetDpiIndex() => _mouse.Calls.Any(c => c.Function == 12);
+
+    [Fact]
+    public void NextDpiSlot_format08_single_enabled_entry_sends_no_set()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0); // P1: only entry 0 (400) enabled
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+        Assert.False(SentSetDpiIndex());
+        Assert.Equal(0, _mouse.DpiIndex);
+    }
+
+    [Fact]
+    public void NextDpiSlot_format08_profile4_wraps_from_3_to_0_past_disabled_entry4()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(4, 3); // P4: entries 0-3 = 1600, entry 4 X = 0
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+        Assert.Equal(0, _mouse.DpiIndex);
+    }
+
+    [Fact]
+    public void NextDpiSlot_format08_profile5_wraps_from_4_to_0()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(5, 4);
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+        Assert.Equal(0, _mouse.DpiIndex);
+    }
+
+    [Fact]
+    public void NextDpiSlot_format08_profile4_steps_from_1_to_2()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(4, 1);
+
+        Assert.Equal(2, Controller.NextDpiSlot());
+        Assert.Equal(2, _mouse.DpiIndex);
+    }
+
+    [Fact]
+    public void NextDpiSlot_format08_reads_the_first_two_chunks_of_the_profile_sector_only()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(4, 3);
+
+        Controller.NextDpiSlot();
+
+        var reads = _mouse.Calls.Where(c => c.Function == 5).Select(c => (c.Params[0] << 8 | c.Params[1], c.Params[2] << 8 | c.Params[3])).ToList();
+        Assert.Equal([(4, 0), (4, 16)], reads);
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function is 6 or 7 or 8);
+    }
+
+    // ---- profile names ----
+
+    private int ProfileSectorReads() =>
+        _mouse.Calls.Count(c => c.Function == 5 && (c.Params[0] << 8 | c.Params[1]) is >= 1 and <= 0xFF);
+
+    [Fact]
+    public void GetState_reads_format08_names_of_enabled_profiles()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (2, true), (3, true), (4, true), (5, true));
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(new Dictionary<int, string> { [1] = "400", [2] = "600", [3] = "800", [4] = "1600", [5] = "3200" }, s.ProfileNames);
+        Assert.DoesNotContain(_mouse.Calls, c => c.Function is 6 or 7 or 8);
+    }
+
+    [Fact]
+    public void Profile_names_are_cached_per_connection()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (5, true));
+
+        Controller.GetState();
+        int reads = ProfileSectorReads();
+        ProfileState switched = Controller.SetProfile(5);
+        Controller.NextDpiSlot(); // reads the DPI chunks of sector 5 only
+        Controller.GetState();
+
+        Assert.Equal("3200", switched.ProfileNames[5]);
+        Assert.Equal(reads + 2, ProfileSectorReads());
+
+        Controller.MarkStale();
+        Controller.GetState();
+        Assert.True(ProfileSectorReads() > reads + 2); // new connection reads them again
+    }
+
+    [Fact]
+    public void Unreadable_profile_sector_just_has_no_name()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0);
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true), (4, true));
+        _mouse.Sectors.Remove(0x0004);
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(new Dictionary<int, string> { [1] = "400" }, s.ProfileNames);
+        Assert.Equal([1, 4], s.EnabledProfiles);
+    }
+
+    [Fact]
+    public void With_fewer_than_two_enabled_profiles_names_of_all_described_profiles_are_read()
+    {
+        AddReceiverWithMouseAt(0x01);
+        UseRealFormat08Profiles(1, 0); // ProfileCount 5
+        _mouse.Sectors[0x0000] = SimulatedDevice.Directory((1, true));
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(["400", "600", "800", "1600", "3200"], s.ProfileNames.OrderBy(kv => kv.Key).Select(kv => kv.Value));
+    }
+
+    [Fact]
+    public void Unknown_profile_format_reads_no_names()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.ProfileFormat = 0x09;
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Empty(s.ProfileNames);
+        Assert.Equal(0, ProfileSectorReads());
+    }
+
+    [Fact]
+    public void NextDpiSlot_unknown_format_cycles_all_five_slots()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.ProfileFormat = 0x09;
+        _mouse.DpiIndex = 4; // profile 1 would have slot 4 disabled under the libratbag layout
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+        _mouse.DpiIndex = 3;
+        Assert.Equal(4, Controller.NextDpiSlot());
+    }
+
     // ---- notifications ----
 
     [Fact]

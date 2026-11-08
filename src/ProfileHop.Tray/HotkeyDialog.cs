@@ -6,7 +6,6 @@ using ProfileHop.Core.Tray;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
-using Windows.Win32.UI.Controls;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace ProfileHop.Tray;
@@ -14,6 +13,9 @@ namespace ProfileHop.Tray;
 internal interface IHotkeyDialogHost
 {
     AppConfig Config { get; }
+
+    /// <summary>Last state the mouse reported (profile list and names), or null before it was reachable.</summary>
+    ProfileHop.Core.ProfileState? LastState { get; }
 
     /// <summary>Called before the dialog shows: the host releases its global hotkeys so the boxes can capture them.</summary>
     void Opening();
@@ -26,8 +28,11 @@ internal interface IHotkeyDialogHost
 }
 
 /// <summary>
-/// "Hotkeys…" window: one row per action with a standard hotkey control (msctls_hotkey32) and a Clear button, plus
-/// Save / Cancel / Reset to defaults. Built with CreateWindowEx only while open and fully destroyed on close
+/// "Hotkeys…" window: one row per action with a key-capture field and a Clear button, plus Save / Cancel / Reset to
+/// defaults. The field is a read-only EDIT subclassed (SetWindowSubclass) to feed its own WM_KEYDOWN / WM_SYSKEYDOWN
+/// into <see cref="HotkeyCapture"/>, so any key HotkeyParser names works, including bare F13–F24 and Win combos
+/// (msctls_hotkey32 can do neither). No hooks or timers: only the focused field sees keys, and the global hotkeys
+/// stay unregistered while the window is open. Built with CreateWindowEx only while open and fully destroyed on close
 /// (font included); nothing is cached between openings except the registered window class.
 /// </summary>
 internal sealed unsafe class HotkeyDialog
@@ -39,22 +44,24 @@ internal sealed unsafe class HotkeyDialog
     private const int IdHotkeyBase = 100;
     private const int IdClearBase = 200;
 
-    // Hotkey control messages and rules (commctrl.h).
-    private const uint HkmSetHotkey = 0x0401, HkmGetHotkey = 0x0402, HkmSetRules = 0x0403;
-    private const uint HkcombNone = 0x1, HkcombS = 0x2;
-    private const uint HotkeyfControl = 0x2, HotkeyfAlt = 0x4;
-    private const uint IccHotkeyClass = 0x40;
     private const uint SpiGetNonClientMetrics = 0x29;
     private const int ColorBtnFace = 15;
     private const int SsLeft = 0x0, SsCenterImage = 0x200, BsPushButton = 0x0, BsDefPushButton = 0x1;
+    private const int EsAutoHScroll = 0x80, EsReadOnly = 0x800;
+
+    // Messages and values handled by the capture field (winuser.h).
+    private const uint WmSetFocus = 0x0007, WmKillFocus = 0x0008, WmGetDlgCode = 0x0087, WmKeyDown = 0x0100, WmKeyUp = 0x0101,
+        WmChar = 0x0102, WmSysKeyDown = 0x0104, WmSysKeyUp = 0x0105, WmSysChar = 0x0106, WmCtlColorStatic = 0x0138;
+    private const int DlgcWantAllKeys = 0x0004, ColorWindow = 5, ColorWindowText = 8;
+    private const int VkShift = 0x10, VkControl = 0x11, VkMenu = 0x12, VkLWin = 0x5B, VkRWin = 0x5C;
 
     private static bool s_classRegistered;
-    private static bool s_commonControlsReady;
 
     private readonly IHotkeyDialogHost _host;
     private readonly AppConfig _config;
     private IReadOnlyList<HotkeyEditorRow> _baseline;
     private readonly List<HWND> _boxes = [];
+    private readonly List<HotkeyCapture> _captures = [];
     private HFONT _font;
     private bool _saved;
 
@@ -62,7 +69,7 @@ internal sealed unsafe class HotkeyDialog
     {
         _host = host;
         _config = host.Config;
-        _baseline = HotkeyEditor.Rows(_config);
+        _baseline = HotkeyEditor.Rows(_config, host.LastState);
     }
 
     public static HotkeyDialog? Current { get; private set; }
@@ -81,7 +88,6 @@ internal sealed unsafe class HotkeyDialog
             return;
         }
 
-        EnsureCommonControls();
         var dialog = new HotkeyDialog(host);
         host.Opening();
         Current = dialog;
@@ -101,18 +107,6 @@ internal sealed unsafe class HotkeyDialog
     {
         _saved = saved;
         if (!Hwnd.IsNull) PInvoke.DestroyWindow(Hwnd); // WM_NCDESTROY cleans up
-    }
-
-    // Lazily, on first open: the tray app never loads comctl32's hotkey class unless the user asks for this window.
-    private static void EnsureCommonControls()
-    {
-        if (s_commonControlsReady) return;
-        var icc = new INITCOMMONCONTROLSEX
-        {
-            dwSize = (uint)sizeof(INITCOMMONCONTROLSEX),
-            dwICC = (INITCOMMONCONTROLSEX_ICC)IccHotkeyClass,
-        };
-        s_commonControlsReady = PInvoke.InitCommonControlsEx(&icc);
     }
 
     private static HINSTANCE Instance => (HINSTANCE)(nint)PInvoke.GetModuleHandle((PCWSTR)null).Value;
@@ -150,17 +144,20 @@ internal sealed unsafe class HotkeyDialog
 
         const int margin = 12, labelW = 190, boxW = 180, clearW = 70, rowH = 24, gap = 8, buttonW = 96, buttonH = 26;
         var y = margin;
-        AddChild("STATIC", "Click a box and press the new key combination. Clear turns a hotkey off.", SsLeft,
-            S(margin), S(y), S(labelW + gap + boxW + gap + clearW), S(rowH), 0, tabStop: false);
-        y += rowH + gap;
+        AddChild("STATIC", "Click a box and press the new key combination (F13–F24 also work alone). "
+            + "Backspace or Clear turns a hotkey off, Esc keeps the old one.", SsLeft,
+            S(margin), S(y), S(labelW + gap + boxW + gap + clearW), S(2 * rowH), 0, tabStop: false);
+        y += 2 * rowH + gap;
 
         for (var i = 0; i < _baseline.Count; i++)
         {
-            AddChild("STATIC", _baseline[i].Label, SsLeft | SsCenterImage, S(margin), S(y), S(labelW), S(rowH), 0, tabStop: false);
-            var box = AddChild("msctls_hotkey32", null, 0, S(margin + labelW + gap), S(y), S(boxW), S(rowH), IdHotkeyBase + i, tabStop: true,
-                WINDOW_EX_STYLE.WS_EX_CLIENTEDGE);
-            PInvoke.SendMessage(box, HkmSetRules, HkcombNone | HkcombS, (nint)(HotkeyfControl | HotkeyfAlt));
+            var label = AddChild("STATIC", _baseline[i].Label, SsLeft | SsCenterImage, S(margin), S(y), S(labelW), S(rowH), 0, tabStop: false);
+            if (!_baseline[i].OnMouse) PInvoke.EnableWindow(label, false); // greyed: binding kept, profile not on the mouse
+            var box = AddChild("EDIT", null, EsReadOnly | EsAutoHScroll, S(margin + labelW + gap), S(y), S(boxW), S(rowH), IdHotkeyBase + i,
+                tabStop: true, WINDOW_EX_STYLE.WS_EX_CLIENTEDGE);
             _boxes.Add(box);
+            _captures.Add(new HotkeyCapture(_baseline[i].Hotkey));
+            PInvoke.SetWindowSubclass(box, &FieldProc, (nuint)i, 0);
             AddChild("BUTTON", "Clear", BsPushButton, S(margin + labelW + gap + boxW + gap), S(y), S(clearW), S(rowH), IdClearBase + i, tabStop: true);
             y += rowH + gap;
         }
@@ -216,9 +213,84 @@ internal sealed unsafe class HotkeyDialog
         _baseline = rows;
         for (var i = 0; i < rows.Count && i < _boxes.Count; i++)
         {
-            var value = rows[i].Hotkey is Hotkey hk ? HotkeyControlCodec.Encode(hk) : (ushort)0;
-            PInvoke.SendMessage(_boxes[i], HkmSetHotkey, value, 0);
+            _captures[i].Set(rows[i].Hotkey);
+            ShowField(i);
         }
+    }
+
+    private void ShowField(int i)
+    {
+        fixed (char* text = _captures[i].Text)
+        {
+            PInvoke.SetWindowText(_boxes[i], text);
+        }
+    }
+
+    private static HotkeyModifiers HeldModifiers()
+    {
+        static bool Down(int vk) => PInvoke.GetKeyState(vk) < 0; // high bit = down at the time of the current message
+        var mods = HotkeyModifiers.None;
+        if (Down(VkControl)) mods |= HotkeyModifiers.Control;
+        if (Down(VkMenu)) mods |= HotkeyModifiers.Alt;
+        if (Down(VkShift)) mods |= HotkeyModifiers.Shift;
+        if (Down(VkLWin) || Down(VkRWin)) mods |= HotkeyModifiers.Win;
+        return mods;
+    }
+
+    /// <summary>
+    /// Subclass procedure of the capture fields (<paramref name="id"/> = row index). Keys go to <see cref="HotkeyCapture"/>;
+    /// WM_CHAR / WM_SYSCHAR and the SYSKEY messages are swallowed so Alt and F10 don't reach the menu loop.
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static LRESULT FieldProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam, nuint id, nuint refData)
+    {
+        var dialog = Current;
+        var i = (int)id;
+        if (msg == WmNcDestroy)
+        {
+            PInvoke.RemoveWindowSubclass(hwnd, &FieldProc, id);
+            return PInvoke.DefSubclassProc(hwnd, msg, wParam, lParam);
+        }
+        if (dialog is null || i >= dialog._captures.Count || dialog._boxes[i] != hwnd)
+            return PInvoke.DefSubclassProc(hwnd, msg, wParam, lParam);
+
+        try
+        {
+            var capture = dialog._captures[i];
+            switch (msg)
+            {
+                case WmGetDlgCode:
+                    // lParam is the MSG about to be handled (null when the dialog manager just asks).
+                    var m = (MSG*)lParam.Value;
+                    var wants = m is null || m->message is not (WmKeyDown or WmSysKeyDown)
+                        || HotkeyCapture.WantsKey((uint)m->wParam.Value, HeldModifiers());
+                    return new LRESULT(wants ? DlgcWantAllKeys : 0);
+                case WmSetFocus:
+                    capture.Begin();
+                    dialog.ShowField(i);
+                    break; // let EDIT handle focus (caret)
+                case WmKillFocus:
+                    capture.End();
+                    dialog.ShowField(i);
+                    break;
+                case WmKeyDown or WmSysKeyDown:
+                    if (capture.KeyDown((uint)wParam.Value, HeldModifiers()) == CaptureOutcome.NotHandled)
+                        break;
+                    dialog.ShowField(i);
+                    return new LRESULT(0);
+                case WmKeyUp or WmSysKeyUp:
+                    capture.KeyUp(HeldModifiers());
+                    dialog.ShowField(i);
+                    return new LRESULT(0);
+                case WmChar or WmSysChar:
+                    return new LRESULT(0);
+            }
+        }
+        catch (Exception ex)
+        {
+            PInvoke.MessageBox(dialog.Hwnd, ex.Message, "ProfileHop", MESSAGEBOX_STYLE.MB_ICONERROR);
+        }
+        return PInvoke.DefSubclassProc(hwnd, msg, wParam, lParam);
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
@@ -240,6 +312,12 @@ internal sealed unsafe class HotkeyDialog
                     case WmNcDestroy:
                         dialog.OnDestroyed();
                         break;
+                    case WmCtlColorStatic when dialog._boxes.Contains((HWND)(nint)lParam.Value):
+                        // Read-only EDITs draw like statics; keep the fields white like normal input boxes.
+                        var hdc = (HDC)(nint)wParam.Value;
+                        PInvoke.SetBkColor(hdc, (COLORREF)PInvoke.GetSysColor((SYS_COLOR_INDEX)ColorWindow));
+                        PInvoke.SetTextColor(hdc, (COLORREF)PInvoke.GetSysColor((SYS_COLOR_INDEX)ColorWindowText));
+                        return new LRESULT((nint)PInvoke.GetSysColorBrush((SYS_COLOR_INDEX)ColorWindow).Value);
                 }
             }
             catch (Exception ex)
@@ -263,11 +341,11 @@ internal sealed unsafe class HotkeyDialog
                 Close(saved: false);
                 break;
             case IdReset:
-                LoadRows(HotkeyEditor.DefaultRows(_config));
+                LoadRows(HotkeyEditor.DefaultRows(_config, _host.LastState));
                 break;
             case >= IdClearBase when id - IdClearBase < _boxes.Count:
-                PInvoke.SendMessage(_boxes[id - IdClearBase], HkmSetHotkey, 0, 0);
-                PInvoke.SetFocus(_boxes[id - IdClearBase]);
+                _captures[id - IdClearBase].Set(null);
+                ShowField(id - IdClearBase);
                 break;
         }
     }
@@ -276,24 +354,7 @@ internal sealed unsafe class HotkeyDialog
     {
         var rows = new List<HotkeyEditorRow>(_baseline.Count);
         for (var i = 0; i < _baseline.Count; i++)
-        {
-            var row = _baseline[i];
-            var value = (ushort)(PInvoke.SendMessage(_boxes[i], HkmGetHotkey, 0, 0).Value & 0xFFFF);
-
-            // Untouched row: keep the original exactly (the control can't show a Win modifier).
-            if (row.Hotkey is Hotkey original && value == HotkeyControlCodec.Encode(original))
-            {
-                rows.Add(row);
-                continue;
-            }
-            if (!HotkeyControlCodec.TryDecode(value, out var hotkey, out var error))
-            {
-                Error($"{row.Label}: {error}");
-                PInvoke.SetFocus(_boxes[i]);
-                return;
-            }
-            rows.Add(row with { Hotkey = hotkey });
-        }
+            rows.Add(_baseline[i] with { Hotkey = _captures[i].Value });
 
         if (!HotkeyEditor.TryBuildBindings(rows, out var bindings, out var duplicate))
         {
@@ -319,6 +380,7 @@ internal sealed unsafe class HotkeyDialog
             _font = default;
         }
         _boxes.Clear();
+        _captures.Clear();
         Hwnd = default;
         Current = null;
         _host.Closed(_saved);

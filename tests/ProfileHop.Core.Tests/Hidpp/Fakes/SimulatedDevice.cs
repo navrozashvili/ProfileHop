@@ -23,6 +23,9 @@ internal sealed class SimulatedDevice
     public ushort CurrentProfile { get; set; } = 1;
     public byte DpiIndex { get; set; } = 1;
 
+    /// <summary>getProfilesDescription byte 1. 2 = libratbag G303 layout; the real PRO X2 SUPERSTRIKE reports 0x08.</summary>
+    public byte ProfileFormat { get; set; } = 2;
+
     /// <summary>When set, getCurrentProfile returns this instead of <see cref="CurrentProfile"/>.</summary>
     public ushort? ReportedProfileOverride { get; set; }
 
@@ -103,7 +106,7 @@ internal sealed class SimulatedDevice
             (0x0005, 0) => [(byte)Name.Length],
             (0x0005, 1) => NameChunk(p[0]),
             (0x0005, 2) => [DeviceType],
-            (0x8100, 0) => [1, 2, 1, ProfileCount, 1, 8, 16, (byte)(SectorSize >> 8), (byte)SectorSize, 0, 2],
+            (0x8100, 0) => [1, ProfileFormat, 1, ProfileCount, 1, 8, 16, (byte)(SectorSize >> 8), (byte)SectorSize, 0, 2],
             (0x8100, 1) => SetOnboardMode(p[0]),
             (0x8100, 2) => [OnboardMode],
             (0x8100, 3) => SetProfile((ushort)((p[0] << 8) | p[1])),
