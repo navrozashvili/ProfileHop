@@ -11,7 +11,7 @@ public sealed record HotkeyEditorRow(HotkeyAction Action, string Label, Hotkey? 
 public static class HotkeyEditor
 {
     /// <summary>
-    /// Rows: Next profile; one per available profile (<see cref="ProfileDisplay.Available"/> for the mouse's last known
+    /// Rows: Next profile; Previous profile; one per available profile (<see cref="ProfileDisplay.Available"/> for the mouse's last known
     /// <paramref name="state"/>, null = not reachable yet) plus profiles that only have a saved binding (marked not
     /// <see cref="HotkeyEditorRow.OnMouse"/> when the list came from the mouse); Next DPI slot. Hotkeys are the saved ones.
     /// </summary>
@@ -64,8 +64,9 @@ public static class HotkeyEditor
             if (action.Kind == HotkeyActionKind.Profile) profiles.Add(action.Profile);
         }
 
-        var rows = new List<HotkeyEditorRow>(profiles.Count + 2);
+        var rows = new List<HotkeyEditorRow>(profiles.Count + 3);
         Add(new HotkeyAction(HotkeyActionKind.NextProfile, 0), "Next profile", true);
+        Add(new HotkeyAction(HotkeyActionKind.PreviousProfile, 0), "Previous profile", true);
         foreach (var p in profiles)
         {
             var name = ProfileDisplay.NameOf(p, config.Profiles, state?.ProfileNames);
