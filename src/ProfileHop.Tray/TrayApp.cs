@@ -45,6 +45,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private HICON _icon;
     private (string Glyph, bool Active) _iconKey;
     private WorkerStatus _shown = WorkerStatus.Starting;
+    private ProfileHop.Core.ProfileState? _lastState;   // last state the mouse reported (kept while unreachable): profile list and names
     private bool _iconAdded;
     private bool _exiting;
     private HMENU _deviceMenu;          // Device submenu while the context menu is open; filled on WM_INITMENUPOPUP
@@ -309,6 +310,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     AppConfig IHotkeyDialogHost.Config => _config;
 
+    ProfileHop.Core.ProfileState? IHotkeyDialogHost.LastState => _lastState;
+
     // ---- Device notifications ----
 
     private void RegisterDeviceNotifications()
@@ -335,6 +338,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _rescanPending = false; // a rescan always ends with a status; WmDevices (posted first) already reported success
         var previous = _shown;
         _shown = status;
+        if (status.State is { } state) _lastState = state;
         UpdateIcon();
 
         var switched = status.IsReachable && previous.IsReachable
@@ -441,10 +445,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             Append(menu, MENU_ITEM_FLAGS.MF_STRING | MENU_ITEM_FLAGS.MF_GRAYED, 0, Tooltip().Replace("&", "&&", StringComparison.Ordinal));
             Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             var active = _shown.IsReachable ? _shown.State!.CurrentProfile : 0;
-            foreach (var p in TrayText.MenuProfiles(_shown.State?.EnabledProfiles, _config.Profiles))
+            foreach (var p in ProfileDisplay.Available(_lastState, _config).Profiles)
             {
                 var flags = MENU_ITEM_FLAGS.MF_STRING | (p == active ? MENU_ITEM_FLAGS.MF_CHECKED : 0);
-                Append(menu, flags, (nuint)(CmdProfileBase + p), TrayText.MenuLabel(p, _config.Profiles));
+                Append(menu, flags, (nuint)(CmdProfileBase + p), TrayText.MenuLabel(p, _config.Profiles, _lastState?.ProfileNames));
             }
             Append(menu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
             // Filled on WM_INITMENUPOPUP from the worker's cached device list; the request below reads the last scan
@@ -578,7 +582,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;
         _worker.CycleOverride = _config.Cycle;
-        _worker.ConfiguredProfiles = [.. _config.Profiles.Select(p => p.Number)];
+        _worker.ConfiguredProfiles = ProfileDisplay.ConfiguredNumbers(_config);
         if (!string.Equals(oldDevice, _config.Device, StringComparison.OrdinalIgnoreCase) || oldForce != _config.ForceOnboardMode)
             _worker.Reconfigure(_config.Device, _config.ForceOnboardMode);
         var problems = new List<string>(loaded.Errors);

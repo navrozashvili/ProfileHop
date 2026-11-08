@@ -35,12 +35,13 @@ public class HotkeyPlanTests
         var plan = HotkeyPlan.Build(new AppConfig().Hotkeys);
 
         Assert.Empty(plan.Errors);
-        Assert.Equal(4, plan.Entries.Count);
+        Assert.Equal(6, plan.Entries.Count); // next-dpi-slot is disabled by default
         Assert.Equal(new Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x78), plan.Entries[0].Hotkey);
         Assert.Equal(new HotkeyAction(HotkeyActionKind.NextProfile, 0), plan.Entries[0].Action);
         Assert.Equal(new HotkeyAction(HotkeyActionKind.Profile, 2), plan.Entries[2].Action);
-        Assert.Equal([1, 2, 3, 4], plan.Entries.Select(e => e.Id));
-        Assert.Equal("Ctrl+Alt+F12", plan.Entries[3].Text);
+        Assert.Equal([1, 2, 3, 4, 5, 6], plan.Entries.Select(e => e.Id));
+        Assert.Equal("Ctrl+Alt+5", plan.Entries[5].Text);
+        Assert.DoesNotContain(plan.Entries, e => e.Action.Kind == HotkeyActionKind.NextDpiSlot);
     }
 
     [Fact]
