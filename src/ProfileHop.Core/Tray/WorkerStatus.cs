@@ -16,5 +16,8 @@ public sealed record WorkerStatus(WorkerStatusKind Kind, ProfileState? State, st
 
     public static WorkerStatus Unreachable(string error) => new(WorkerStatusKind.Unreachable, null, error);
 
+    /// <summary>One-off message for a balloon (e.g. the mouse rejected a switch); the status itself stays reachable.</summary>
+    public string? Notice { get; init; }
+
     public bool IsReachable => Kind == WorkerStatusKind.Reachable;
 }

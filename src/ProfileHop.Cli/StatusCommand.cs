@@ -9,7 +9,9 @@ internal static class StatusCommand
 {
     public static int Run(IHidDeviceSource source, string[] args)
     {
+        bool force = args.Contains("--force-onboard");
         using var controller = new MouseController(source);
+        controller.Configure(null, forceOnboardMode: force);
         try
         {
             ConnectedMouse mouse = controller.Connect();
@@ -43,7 +45,7 @@ internal static class StatusCommand
         Console.WriteLine($"Onboard mode:     {s.OnboardMode} ({mode})");
         Console.WriteLine($"Profile count:    {d.ProfileCount} (+{d.ProfileCountOob} read-only), sector size {d.SectorSize}");
         Console.WriteLine($"Enabled profiles: {(s.EnabledProfiles.Count == 0 ? "none found in directory" : string.Join(", ", s.EnabledProfiles))}");
-        Console.WriteLine($"Current profile:  {s.CurrentProfile}");
+        Console.WriteLine($"Current profile:  {s.CurrentProfile}{(s.CurrentProfile == 0 ? " (none: host mode, close G HUB or use --force-onboard)" : "")}");
         Console.WriteLine($"DPI slot:         {(s.DpiIndex is { } dpi ? dpi.ToString() : "not read")}");
     }
 }

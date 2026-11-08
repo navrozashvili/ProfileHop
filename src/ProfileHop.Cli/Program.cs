@@ -21,8 +21,14 @@ internal static class Program
         Console.WriteLine("profilehop-cli <command>");
         Console.WriteLine("  list               List Logitech HID++ collections");
         Console.WriteLine("  probe              Find the mouse and dump its HID++ feature table");
-        Console.WriteLine("  status             Show onboard mode, profiles, current profile, DPI slot");
-        Console.WriteLine("  set-profile <n>    Activate onboard profile n");
+        Console.WriteLine("  status [--force-onboard]");
+        Console.WriteLine("                     Show onboard mode, profiles, current profile, DPI slot");
+        Console.WriteLine("  set-profile <n> [--force-onboard]");
+        Console.WriteLine("                     Activate onboard profile n");
+        Console.WriteLine();
+        Console.WriteLine("  --force-onboard    If G HUB left the mouse in host mode, switch it back to onboard");
+        Console.WriteLine("                     mode first (setOnboardMode; no memory is written). Without it,");
+        Console.WriteLine("                     set-profile refuses in host mode.");
         return args.Length == 0 ? 0 : 1;
     }
 }

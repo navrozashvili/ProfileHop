@@ -4,7 +4,7 @@ namespace ProfileHop.Core;
 
 /// <summary>Onboard state read from the mouse.</summary>
 /// <param name="OnboardMode">1 = onboard, 2 = host (G HUB took over).</param>
-/// <param name="CurrentProfile">1-based active profile.</param>
+/// <param name="CurrentProfile">1-based active profile; 0 = none / host mode (the mouse reports 0 while G HUB controls it).</param>
 /// <param name="EnabledProfiles">1-based enabled profiles from the profile directory, ascending.</param>
 /// <param name="DpiIndex">Active DPI slot inside the current profile, or null if not read.</param>
 /// <param name="PreferredDeviceMissing">A device was chosen in config but not found; the automatic choice is in use.</param>
@@ -52,14 +52,18 @@ public static class DeviceKey
 
 /// <summary>
 /// What the tray app needs from the mouse. Implemented by MouseController. All methods block and may be slow
-/// (wireless wake-up), so call them from a background worker only. Methods connect lazily and throw on failure
-/// (any exception = "mouse not reachable" for the UI).
+/// (wireless wake-up), so call them from a background worker only. Methods connect lazily and throw on failure:
+/// <see cref="HostModeException"/> (G HUB has the mouse), HidppException / HidppProtocolException (the mouse refused;
+/// connection kept), anything else = "mouse not reachable" (connection dropped).
 /// </summary>
 public interface IProfileSwitcher : IDisposable
 {
     ProfileState GetState();
 
-    /// <summary>Activates a 1-based profile, then confirms with getCurrentProfile and returns the new state.</summary>
+    /// <summary>
+    /// Activates a 1-based profile, then confirms with getCurrentProfile and returns the new state. Throws
+    /// <see cref="HostModeException"/> without sending anything when the mouse is in host mode and forceOnboardMode is off.
+    /// </summary>
     ProfileState SetProfile(int profile);
 
     /// <summary>Moves to the next DPI slot inside the current profile; returns the new slot index.</summary>
