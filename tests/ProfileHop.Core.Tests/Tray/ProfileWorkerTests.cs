@@ -405,6 +405,80 @@ public class ProfileWorkerTests
         worker.RequestProfile(1); // after dispose: ignored, no throw
     }
 
+    // ---- device choice ----
+
+    [Fact]
+    public void Reconfigure_configures_switcher_then_refreshes_state()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.Reconfigure("C54D/PRO X2 SUPERSTRIKE", forceOnboardMode: true);
+        worker.ProcessPending();
+
+        Assert.Equal(["configure C54D/PRO X2 SUPERSTRIKE force", "get"], mouse.Calls);
+        Assert.True(Assert.Single(statuses).IsReachable);
+    }
+
+    [Fact]
+    public void Reconfigure_runs_before_a_pending_switch()
+    {
+        var (worker, mouse, _) = Create();
+
+        worker.RequestProfile(2);
+        worker.Reconfigure(null, forceOnboardMode: false);
+        worker.ProcessPending();
+
+        Assert.Equal(["configure auto noforce", "set 2"], mouse.Calls);
+    }
+
+    [Fact]
+    public void RequestDevices_lists_and_publishes_without_touching_state()
+    {
+        var (worker, mouse, statuses) = Create();
+        mouse.Devices = [new KnownDevice("C54D/PRO X2 SUPERSTRIKE", "PRO X2 SUPERSTRIKE (receiver C54D)", 3, true)];
+        var published = new List<IReadOnlyList<KnownDevice>>();
+        worker.DevicesChanged += d => published.Add(d);
+        Assert.Null(worker.Devices);
+
+        worker.RequestDevices(rescan: false);
+        worker.ProcessPending();
+
+        Assert.Equal(["list"], mouse.Calls);
+        Assert.Equal(mouse.Devices, Assert.Single(published));
+        Assert.Equal(mouse.Devices, worker.Devices);
+        Assert.Empty(statuses);
+    }
+
+    [Fact]
+    public void RequestDevices_rescan_also_refreshes_state()
+    {
+        var (worker, mouse, statuses) = Create();
+
+        worker.RequestDevices(rescan: false);
+        worker.RequestDevices(rescan: true);
+        worker.ProcessPending();
+
+        Assert.Equal(["rescan", "get"], mouse.Calls);
+        Assert.Single(statuses);
+    }
+
+    [Fact]
+    public void RequestDevices_failure_is_logged_and_keeps_status()
+    {
+        var mouse = new FakeSwitcher { ListFailsWith = new IOException("boom") };
+        var log = new ListLog();
+        var worker = new ProfileWorker(mouse, log);
+        var published = 0;
+        worker.DevicesChanged += _ => published++;
+
+        worker.RequestDevices(rescan: false);
+        worker.ProcessPending();
+
+        Assert.Equal(WorkerStatusKind.Starting, worker.Status.Kind);
+        Assert.Equal(0, published);
+        Assert.Contains(log.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("boom"));
+    }
+
     internal sealed class ListLog : ILog
     {
         public List<(LogLevel Level, string Message)> Lines { get; } = [];
