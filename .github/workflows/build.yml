@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # NativeAOT's linker lookup calls vswhere.exe by name.
+      - name: Put vswhere on PATH
+        shell: pwsh
+        run: '"${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH'
+
+      - name: Test
+        run: dotnet test ProfileHop.slnx -c Release
+
+      - name: Publish (NativeAOT)
+        run: |
+          dotnet publish src/ProfileHop.Tray -c Release -o out
+          dotnet publish src/ProfileHop.Cli -c Release -o out
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path out/profilehop.exe, out/profilehop-cli.exe -DestinationPath ProfileHop-win-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProfileHop-win-x64
+          path: ProfileHop-win-x64.zip
+
+      - name: Release
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v1.0.${{ github.run_number }}"
+          gh release create $tag ProfileHop-win-x64.zip out/profilehop.exe out/profilehop-cli.exe `
+            --title "ProfileHop $tag" --generate-notes --target "${{ github.sha }}"
