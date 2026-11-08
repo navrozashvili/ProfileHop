@@ -127,6 +127,15 @@ Every sector's stored CRC (CRC-CCITT seed 0xFFFF, last 2 bytes BE, as libratbag)
 | 0xA0.. | profile name, UTF-16LE, NUL-terminated | "400", "600", "800", "1600", "3200" |
 | last 2 | CRC-CCITT, BE | valid on every sector |
 
+Profile names: libratbag's `union hidpp20_internal_profile` has `name` (`char txt[16 * 3]`, 48 bytes) right after
+`alternate_buttons[16]`, i.e. at 0xA0 (13 + 3 color + power_mode + angle_snapping + 10 reserved + 2×2 timeouts + 2×64
+button bytes = 160). `hidpp20_onboard_profiles_parse_profile` memcpy's it as a raw C string, forces the last byte to
+NUL and treats an all-0xFF field as "default name" (no name). Format 0x08 keeps the field at 0xA0 but stores UTF-16LE.
+`ProfileSector.Name` follows libratbag for 1–5 (bytes up to NUL, read as UTF-8) and UTF-16LE for 0x08. `MouseController`
+reads the 48-byte field (3 memoryRead chunks) of each enabled profile — and of profiles 1..profile count when the
+directory lists fewer than two — once per connection, on the first state read; a sector that can't be read just has
+no name. `ProfileState.ProfileNames` carries the result.
+
 Used by `NextDpiSlot` (enabled = X ≠ 0) and by the `profiles` command, which labels the decode "INFERRED LAYOUT".
 Nothing is ever written. Unverified: the flag byte, bytes 0–1, and whether byte 3 really is the DPI-shift slot.
 
