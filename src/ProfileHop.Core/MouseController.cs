@@ -446,6 +446,12 @@ public sealed class MouseController : IProfileSwitcher
             {
                 ThrowIfCancelled();
                 ushort pid = device.Collections.Count > 0 ? device.Collections[0].ProductId : (ushort)0;
+                if (HidReports.Unusable(device.Collections) is { } unusable)
+                {
+                    probes.Add(new DeviceProbe(device, pid, 0, null, false, null, null, unusable));
+                    continue;
+                }
+
                 IHidTransport transport;
                 try
                 {

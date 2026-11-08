@@ -47,12 +47,28 @@ public class HidReportsTests
     }
 
     [Fact]
-    public void ChooseWriteTarget_FallsBackToFirstWritable()
+    public void ChooseWriteTarget_ShortOnly_ReturnsMinusOne()
     {
+        // Every request is a 20-byte long frame (and replies like memoryRead need long reports): a short-only
+        // device would fail every write, so it has no write target.
         HidCollection noOutput = HidPathsTests.Make("a&col01", 1, 7, 0);
         HidCollection shortCol = HidPathsTests.Make("a&col02", 1, 7, 7);
 
-        Assert.Equal(1, HidReports.ChooseWriteTarget([noOutput, shortCol]));
+        Assert.Equal(-1, HidReports.ChooseWriteTarget([noOutput, shortCol]));
+    }
+
+    [Fact]
+    public void ChooseWriteTarget_LongWithoutOutputReport_ReturnsMinusOne()
+    {
+        Assert.Equal(-1, HidReports.ChooseWriteTarget([HidPathsTests.Make("a&col01", 1, 7, 7), HidPathsTests.Make("a&col02", 2, 20, 0)]));
+    }
+
+    [Fact]
+    public void Unusable_names_a_device_without_a_long_collection()
+    {
+        Assert.Equal("no long HID++ collection", HidReports.Unusable([HidPathsTests.Make("a&col01", 1, 7, 7)]));
+        Assert.Equal("no long HID++ collection", HidReports.Unusable([]));
+        Assert.Null(HidReports.Unusable([HidPathsTests.Make("a&col01", 1, 7, 7), HidPathsTests.Make("a&col02", 2, 20, 20)]));
     }
 
     [Fact]
