@@ -217,6 +217,9 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private void Shutdown()
     {
         _exiting = true;
+        // Before _hwnd is cleared: PostMessage(NULL, ...) would post the worker's events to the worker thread's queue.
+        _worker.StatusChanged -= OnWorkerStatus;
+        _worker.DevicesChanged -= OnWorkerDevices;
         HotkeyDialog.Current?.Close(saved: false);
         UnregisterHotkeys();
         if (!_devNotify.IsNull)
@@ -331,12 +334,19 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     // ---- Tray icon ----
 
-    private void OnWorkerStatus(WorkerStatus status) => PInvoke.PostMessage(_hwnd, WmStatus, default, default); // marshal to UI
+    private void OnWorkerStatus(WorkerStatus status) => PostToUi(WmStatus);
 
     private void OnWorkerDevices(DeviceListResult result)
     {
         _devicesResult = result;
-        PInvoke.PostMessage(_hwnd, WmDevices, default, default);
+        PostToUi(WmDevices);
+    }
+
+    /// <summary>Marshals a worker event to the UI thread; dropped once the window is gone (never posts to HWND NULL).</summary>
+    private void PostToUi(uint msg)
+    {
+        var hwnd = _hwnd; // an event already in flight while Shutdown runs
+        if (!hwnd.IsNull) PInvoke.PostMessage(hwnd, msg, default, default);
     }
 
     private void ShowStatus(WorkerStatus status)

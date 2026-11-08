@@ -93,6 +93,8 @@ internal static class Program
 
         public IReadOnlyList<KnownDevice> ListDevices(bool rescan) => [];
 
+        public void Cancel() { }
+
         public void Dispose() { }
     }
 }
