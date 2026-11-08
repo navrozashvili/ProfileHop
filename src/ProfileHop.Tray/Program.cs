@@ -17,7 +17,7 @@ internal static class Program
     /// .Device and <paramref name="log"/> if the controller accepts them).
     /// </summary>
     internal static IProfileSwitcher CreateSwitcher(AppConfig config, ILog log) =>
-        throw new NotImplementedException("wired by orchestrator");
+        new MouseController(new ProfileHop.Core.Hid.WindowsHidDeviceSource());
 
     /// <summary>
     /// Usage: <c>profilehop [--no-mouse] [--data-dir &lt;folder&gt;]</c>. <c>--no-mouse</c> runs the UI with a switcher

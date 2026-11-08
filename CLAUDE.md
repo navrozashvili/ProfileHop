@@ -11,7 +11,9 @@ profile via HID++ 2.0 (feature 0x8100 setCurrentProfile). Full plan: `docs/PLAN.
   If the link step says `'vswhere.exe' is not recognized`, put
   `C:\Program Files (x86)\Microsoft Visual Studio\Installer` on PATH.
 - Everything is x64 (`PlatformTarget` in Directory.Build.props) because CsWin32's SetupDi structs are arch-specific.
-- Win32 APIs: add names to `src/ProfileHop.Core/NativeMethods.txt` (CsWin32, `allowMarshaling: false`). No hand-written P/Invoke.
+- Win32 APIs: add names to the project's own `NativeMethods.txt` — `src/ProfileHop.Core/` for HID, `src/ProfileHop.Tray/`
+  for UI (CsWin32, `allowMarshaling: false`, generated `internal`). No hand-written P/Invoke.
+- `profilehop.exe --no-mouse [--data-dir <dir>]` runs the tray UI without hardware (grey icon).
 
 ## Rules for Claude Code
 
