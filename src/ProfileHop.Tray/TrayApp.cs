@@ -51,7 +51,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private HMENU _deviceMenu;          // Device submenu while the context menu is open; filled on WM_INITMENUPOPUP
     private bool _deviceMenuFilled;
     private IReadOnlyList<DeviceMenuItem> _deviceItems = [];
-    private bool _rescanPending;
+    private long _rescanRequest;        // id of the Rescan request awaiting its answer; 0 = none
+    private volatile DeviceListResult? _devicesResult; // latest DevicesChanged result (set on the worker thread)
 
     public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart)
     {
@@ -332,11 +333,14 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
     private void OnWorkerStatus(WorkerStatus status) => PInvoke.PostMessage(_hwnd, WmStatus, default, default); // marshal to UI
 
-    private void OnWorkerDevices(IReadOnlyList<ProfileHop.Core.KnownDevice> devices) => PInvoke.PostMessage(_hwnd, WmDevices, default, default);
+    private void OnWorkerDevices(DeviceListResult result)
+    {
+        _devicesResult = result;
+        PInvoke.PostMessage(_hwnd, WmDevices, default, default);
+    }
 
     private void ShowStatus(WorkerStatus status)
     {
-        _rescanPending = false; // a rescan always ends with a status; WmDevices (posted first) already reported success
         var previous = _shown;
         _shown = status;
         if (status.State is { } state) _lastState = state;
@@ -497,15 +501,22 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (item.Checked ? MENU_ITEM_FLAGS.MF_CHECKED : 0), (nuint)(CmdDeviceBase + i), item.Label);
         }
         Append(_deviceMenu, MENU_ITEM_FLAGS.MF_SEPARATOR, 0, null);
-        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (_rescanPending ? MENU_ITEM_FLAGS.MF_GRAYED : 0), CmdRescan,
-            _rescanPending ? "Rescanning…" : "&Rescan");
+        var rescanning = _rescanRequest != 0;
+        Append(_deviceMenu, MENU_ITEM_FLAGS.MF_STRING | (rescanning ? MENU_ITEM_FLAGS.MF_GRAYED : 0), CmdRescan,
+            rescanning ? "Rescanning…" : "&Rescan");
     }
 
     private void OnDevicesListed()
     {
-        if (!_rescanPending) return;
-        _rescanPending = false;
-        var count = _worker.Devices?.Count ?? 0;
+        // Only the answer to our own Rescan request reports (a menu listing or an unrelated status change doesn't).
+        if (_devicesResult is not { } result || !result.Answers(_rescanRequest)) return;
+        _rescanRequest = 0;
+        if (result.Error is { } error)
+        {
+            ShowBalloon("ProfileHop", $"Rescan failed: {error}", warning: true);
+            return;
+        }
+        var count = result.Devices.Count;
         ShowBalloon("ProfileHop", count switch
         {
             0 => "Rescan found no device with onboard profiles.",
@@ -562,9 +573,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 SelectDevice(null);
                 break;
             case CmdRescan:
-                if (_rescanPending) break;
-                _rescanPending = true;
-                _worker.RequestDevices(rescan: true);
+                if (_rescanRequest != 0) break;
+                _rescanRequest = _worker.RequestDevices(rescan: true);
                 break;
             case >= CmdDeviceBase and < CmdProfileBase:
                 if (cmd - CmdDeviceBase < _deviceItems.Count) SelectDevice(_deviceItems[cmd - CmdDeviceBase].Key);

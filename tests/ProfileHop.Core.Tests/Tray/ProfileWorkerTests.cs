@@ -648,7 +648,7 @@ public class ProfileWorkerTests
         var (worker, mouse, statuses) = Create();
         mouse.Devices = [new KnownDevice("C54D/PRO X2 SUPERSTRIKE", "PRO X2 SUPERSTRIKE (receiver C54D)", 3, true)];
         var published = new List<IReadOnlyList<KnownDevice>>();
-        worker.DevicesChanged += d => published.Add(d);
+        worker.DevicesChanged += d => published.Add(d.Devices);
         Assert.Null(worker.Devices);
 
         worker.RequestDevices(rescan: false);
@@ -679,15 +679,58 @@ public class ProfileWorkerTests
         var mouse = new FakeSwitcher { ListFailsWith = new IOException("boom") };
         var log = new ListLog();
         var worker = new ProfileWorker(mouse, log);
-        var published = 0;
-        worker.DevicesChanged += _ => published++;
+        var published = new List<DeviceListResult>();
+        worker.DevicesChanged += published.Add;
 
-        worker.RequestDevices(rescan: false);
+        long id = worker.RequestDevices(rescan: false);
         worker.ProcessPending();
 
         Assert.Equal(WorkerStatusKind.Starting, worker.Status.Kind);
-        Assert.Equal(0, published);
+        // Still answered (with the error), so the tray's "Rescanning…" never gets stuck.
+        var r = Assert.Single(published);
+        Assert.Equal(id, r.RequestId);
+        Assert.Equal("boom", r.Error);
+        Assert.Empty(r.Devices);
+        Assert.Null(worker.Devices);
         Assert.Contains(log.Lines, l => l.Level == LogLevel.Warning && l.Message.Contains("boom"));
+    }
+
+    [Fact]
+    public void RequestDevices_ids_increase_and_each_result_names_the_latest_request_it_answers()
+    {
+        var (worker, _, _) = Create();
+        var published = new List<DeviceListResult>();
+        worker.DevicesChanged += published.Add;
+
+        long first = worker.RequestDevices(rescan: false);
+        worker.ProcessPending();
+        long second = worker.RequestDevices(rescan: true);
+        long third = worker.RequestDevices(rescan: false); // coalesced with the rescan
+        worker.ProcessPending();
+
+        Assert.True(first > 0 && second > first && third > second);
+        Assert.Equal([first, third], published.Select(p => p.RequestId));
+    }
+
+    [Fact]
+    public void Rescan_result_is_recognised_even_after_unrelated_status_changes()
+    {
+        // The tray's "Rescan found N devices" balloon: a hotkey batch finishing first must not swallow it.
+        var (worker, _, statuses) = Create();
+        var published = new List<DeviceListResult>();
+        worker.DevicesChanged += published.Add;
+
+        long menuOpened = worker.RequestDevices(rescan: false);
+        worker.ProcessPending();
+        long rescan = worker.RequestDevices(rescan: true);
+        worker.RequestProfile(2);
+        worker.ProcessPending();
+
+        Assert.Single(statuses);
+        Assert.False(published[0].Answers(rescan)); // the earlier menu listing is not the rescan's answer
+        Assert.True(published[1].Answers(rescan));
+        Assert.False(published[1].Answers(0));      // nothing pending
+        Assert.True(menuOpened < rescan);
     }
 
     internal sealed class ListLog : ILog

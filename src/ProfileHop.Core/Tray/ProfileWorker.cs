@@ -30,6 +30,8 @@ public sealed class ProfileWorker : IDisposable
     private (string? Device, bool ForceOnboard)? _configure;
     private bool _listDevices;
     private bool _rescan;
+    private long _lastDevicesRequest; // ids handed out by RequestDevices
+    private long _devicesRequest;     // latest id pending
     private volatile IReadOnlyList<KnownDevice>? _devices;
 
     // Worker-thread state.
@@ -53,8 +55,11 @@ public sealed class ProfileWorker : IDisposable
     /// <summary>Raised on the worker thread with the new DPI slot index.</summary>
     public event Action<int>? DpiSlotChanged;
 
-    /// <summary>Raised on the worker thread after <see cref="RequestDevices"/> with the device list.</summary>
-    public event Action<IReadOnlyList<KnownDevice>>? DevicesChanged;
+    /// <summary>
+    /// Raised on the worker thread after <see cref="RequestDevices"/> with the device list (or the error), tagged with
+    /// the id of the request it answers.
+    /// </summary>
+    public event Action<DeviceListResult>? DevicesChanged;
 
     /// <summary>Latest status; safe to read from any thread.</summary>
     public WorkerStatus Status => _status;
@@ -113,13 +118,21 @@ public sealed class ProfileWorker : IDisposable
     /// <summary>
     /// Fetches the device list into <see cref="Devices"/> and raises <see cref="DevicesChanged"/>. Without
     /// <paramref name="rescan"/> this only reads the last scan's result; with it every receiver is probed and the
-    /// state is refreshed.
+    /// state is refreshed. Returns this request's id (increasing; 0 after dispose): <see cref="DeviceListResult.Answers"/>
+    /// tells whether a <see cref="DevicesChanged"/> result is the answer to it.
     /// </summary>
-    public void RequestDevices(bool rescan) => Post(() =>
+    public long RequestDevices(bool rescan)
     {
-        _listDevices = true;
-        _rescan |= rescan;
-    });
+        long id = 0;
+        Post(() =>
+        {
+            id = ++_lastDevicesRequest;
+            _devicesRequest = id;
+            _listDevices = true;
+            _rescan |= rescan;
+        });
+        return id;
+    }
 
     /// <summary>Runs one coalesced batch on the calling thread. Returns false when nothing was pending.</summary>
     public bool ProcessPending()
@@ -127,6 +140,7 @@ public sealed class ProfileWorker : IDisposable
         int? target, deviceProfile;
         int steps, dpiSteps;
         bool refresh, stale, listDevices, rescan;
+        long devicesRequest;
         (string? Device, bool ForceOnboard)? configure;
         lock (_lock)
         {
@@ -135,6 +149,7 @@ public sealed class ProfileWorker : IDisposable
             (_target, _steps, _refresh, _stale, _deviceProfile, _dpiSteps) = (null, 0, false, false, null, 0);
             (configure, listDevices, rescan) = (_configure, _listDevices, _rescan);
             (_configure, _listDevices, _rescan) = (null, false, false);
+            devicesRequest = _devicesRequest;
         }
 
         if (configure is { } cfg)
@@ -146,7 +161,7 @@ public sealed class ProfileWorker : IDisposable
 
         if (listDevices)
         {
-            ListDevices(rescan);
+            ListDevices(rescan, devicesRequest);
             if (rescan) refresh = true;
         }
 
@@ -305,7 +320,7 @@ public sealed class ProfileWorker : IDisposable
     private static bool HasWork(int? target, int steps, bool refresh, bool stale, int? deviceProfile, int dpiSteps) =>
         target is not null || steps != 0 || refresh || stale || deviceProfile is not null || dpiSteps > 0;
 
-    private void ListDevices(bool rescan)
+    private void ListDevices(bool rescan, long requestId)
     {
         IReadOnlyList<KnownDevice> devices;
         try
@@ -316,11 +331,12 @@ public sealed class ProfileWorker : IDisposable
         catch (Exception ex)
         {
             _log?.Write(LogLevel.Warning, $"Listing devices failed: {ex.GetType().Name}: {ex.Message}");
+            DevicesChanged?.Invoke(new DeviceListResult(_devices ?? [], requestId, ex.Message));
             return;
         }
         if (rescan) _log?.Write(LogLevel.Info, $"Devices: {(devices.Count == 0 ? "none" : string.Join(", ", devices.Select(d => d.Key)))}.");
         _devices = devices;
-        DevicesChanged?.Invoke(devices);
+        DevicesChanged?.Invoke(new DeviceListResult(devices, requestId, null));
     }
 
     private void Run()
