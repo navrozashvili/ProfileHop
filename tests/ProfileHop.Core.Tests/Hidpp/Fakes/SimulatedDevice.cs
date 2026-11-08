@@ -141,14 +141,14 @@ internal sealed class SimulatedDevice
     {
         if (profile == 0 || profile > ProfileCount)
             return null;
-        if (!IgnoreSetProfile)
+        if (!IgnoreSetProfile && OnboardMode != 2) // real mouse in host mode: accepted, no effect
             CurrentProfile = profile;
         return [];
     }
 
     private byte[] GetProfile()
     {
-        ushort v = ReportedProfileOverride ?? CurrentProfile;
+        ushort v = ReportedProfileOverride ?? (OnboardMode == 2 ? (ushort)0 : CurrentProfile); // host mode reports 0 (real PRO X2 SUPERSTRIKE)
         return [(byte)(v >> 8), (byte)v];
     }
 

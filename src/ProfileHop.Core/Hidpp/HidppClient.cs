@@ -1,11 +1,13 @@
 using ProfileHop.Core.Hid;
+using ProfileHop.Core.Tray;
 
 namespace ProfileHop.Core.Hidpp;
 
 /// <summary>
 /// HID++ 2.0 request/response over an <see cref="IHidTransport"/>. One request in flight at a time; a background
 /// pump reads every input report and either completes the pending request, raises <see cref="Notification"/>
-/// (swId 0), or drops the report. Does not own the transport.
+/// (swId 0), or drops the report. Does not own the transport. With a log at Debug level every sent (TX) and received
+/// (RX) report is hex-dumped.
 /// </summary>
 public sealed class HidppClient : IDisposable
 {
@@ -14,18 +16,21 @@ public sealed class HidppClient : IDisposable
     private readonly IHidTransport _transport;
     private readonly TimeSpan _timeout;
     private readonly TimeProvider _time;
+    private readonly ILog? _log;
     private readonly CancellationTokenSource _cts = new();
     private readonly Lock _requestLock = new();
     private readonly Lock _pendingLock = new();
     private readonly Task _pump;
     private Pending? _pending;
+    private byte _swId; // last software ID sent; guarded by _requestLock
     private volatile bool _closed;
 
-    public HidppClient(IHidTransport transport, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
+    public HidppClient(IHidTransport transport, TimeSpan? timeout = null, TimeProvider? timeProvider = null, ILog? log = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _timeout = timeout ?? DefaultTimeout;
         _time = timeProvider ?? TimeProvider.System;
+        _log = log;
         _pump = Task.Run(PumpAsync);
     }
 
@@ -36,8 +41,9 @@ public sealed class HidppClient : IDisposable
     public bool IsClosed => _closed;
 
     /// <summary>
-    /// Sends a long report and waits for the matching reply (same device index, feature index and byte 3).
-    /// Times out after the configured timeout, retries once. Returns the 16 reply parameter bytes.
+    /// Sends a long report and waits for the matching reply (same device index, feature index and byte 3, i.e.
+    /// function and this send's software ID). Times out after the configured timeout, retries once with a new
+    /// software ID. Returns the 16 reply parameter bytes.
     /// </summary>
     /// <exception cref="HidppException">HID++ 2.0 error reply.</exception>
     /// <exception cref="DeviceUnreachableException">HID++ 1.0 error reply (0x8F).</exception>
@@ -45,18 +51,20 @@ public sealed class HidppClient : IDisposable
     /// <exception cref="IOException">Transport closed.</exception>
     public byte[] Request(byte deviceIndex, byte featureIndex, byte function, ReadOnlySpan<byte> parameters)
     {
-        byte[] frame = HidppMessage.EncodeLong(deviceIndex, featureIndex, function, HidppMessage.SoftwareId, parameters);
-
         lock (_requestLock)
         {
             const int attempts = 2;
             for (int attempt = 1; ; attempt++)
             {
                 ThrowIfClosed();
+                // A fresh swId per send: a late reply to an earlier attempt or request carries an old swId and is
+                // dropped instead of completing this one with the wrong data.
+                byte[] frame = HidppMessage.EncodeLong(deviceIndex, featureIndex, function, NextSwId(), parameters);
                 var pending = new Pending(deviceIndex, featureIndex, frame[3]);
                 lock (_pendingLock) _pending = pending;
                 try
                 {
+                    LogFrame("TX ", frame);
                     _transport.Write(frame);
                     return pending.Completion.Task.WaitAsync(_timeout, _time).GetAwaiter().GetResult().Params;
                 }
@@ -79,6 +87,13 @@ public sealed class HidppClient : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>Software IDs 0x1..0xF in turn; 0 is reserved for device notifications.</summary>
+    private byte NextSwId()
+    {
+        _swId = (byte)(_swId % 0x0F + 1);
+        return _swId;
     }
 
     private void ThrowIfClosed()
@@ -110,8 +125,16 @@ public sealed class HidppClient : IDisposable
         }
     }
 
+    /// <summary>Hex-dumps a frame at Debug; formats nothing unless Debug is enabled.</summary>
+    private void LogFrame(string direction, byte[] frame)
+    {
+        if (_log is { } log && log.IsEnabled(LogLevel.Debug))
+            log.Write(LogLevel.Debug, direction + HexFormat.Frame(frame));
+    }
+
     private void Dispatch(byte[] report)
     {
+        LogFrame("RX ", report);
         if (!HidppMessage.TryDecode(report, out HidppMessage msg))
             return;
 

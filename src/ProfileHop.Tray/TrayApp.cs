@@ -339,7 +339,11 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
 
         var switched = status.IsReachable && previous.IsReachable
             && status.State!.CurrentProfile != previous.State!.CurrentProfile;
-        if (switched)
+        if (status.Notice is { } notice)
+        {
+            if (_config.Balloon) ShowBalloon("ProfileHop", notice, warning: true);
+        }
+        else if (switched)
         {
             if (_config.Sound) PInvoke.MessageBeep(MESSAGEBOX_STYLE.MB_OK);
             if (_config.Balloon) ShowBalloon("ProfileHop", Tooltip()["ProfileHop: ".Length..], warning: false);
@@ -574,6 +578,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _config = loaded.Config;
         _log.MinLevel = _config.LogLevel;
         _worker.CycleOverride = _config.Cycle;
+        _worker.ConfiguredProfiles = [.. _config.Profiles.Select(p => p.Number)];
         if (!string.Equals(oldDevice, _config.Device, StringComparison.OrdinalIgnoreCase) || oldForce != _config.ForceOnboardMode)
             _worker.Reconfigure(_config.Device, _config.ForceOnboardMode);
         var problems = new List<string>(loaded.Errors);

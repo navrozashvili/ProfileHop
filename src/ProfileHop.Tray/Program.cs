@@ -49,7 +49,10 @@ internal static class Program
             foreach (var e in loaded.Errors) log.Write(LogLevel.Warning, e);
 
             using var switcher = noMouse ? new NoMouseSwitcher() : CreateSwitcher(loaded.Config, log);
-            using var worker = new ProfileWorker(switcher, log) { CycleOverride = loaded.Config.Cycle };
+            using var worker = new ProfileWorker(switcher, log) {
+                CycleOverride = loaded.Config.Cycle,
+                ConfiguredProfiles = [.. loaded.Config.Profiles.Select(p => p.Number)],
+            };
             var autostart = new Autostart(new RegistryRunKeyStore(), Environment.ProcessPath ?? "profilehop.exe");
 
             using var app = new TrayApp(configPath, loaded, log, worker, autostart);

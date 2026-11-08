@@ -133,6 +133,89 @@ public class HidppClientTests
     }
 
     [Fact]
+    public void Late_reply_to_a_timed_out_attempt_does_not_complete_the_next_request()
+    {
+        // Request 1: attempt 1 gets no reply in time, the retry is answered. The late reply to attempt 1 then
+        // arrives while request 2 (same feature/function, e.g. the next memoryRead chunk) waits.
+        var writes = new List<byte[]>();
+        var t = new FakeHidTransport { EchoSwId = false };
+        t.Responder = w =>
+        {
+            writes.Add(w);
+            static byte[] Reply(byte[] req, byte data) => Long(req[1], req[2], req[3], data);
+            return writes.Count switch
+            {
+                1 => [],
+                2 => [Reply(writes[1], 0x01)],
+                _ => [Reply(writes[0], 0x01), Reply(writes[2], 0x02)],
+            };
+        };
+        using var c = new HidppClient(t, ShortTimeout);
+
+        Assert.Equal(0x01, c.Request(0x01, 0x0E, 5, [0x00, 0x00, 0x00, 0x00])[0]);
+        Assert.Equal(0x02, c.Request(0x01, 0x0E, 5, [0x00, 0x00, 0x00, 0x10])[0]);
+    }
+
+    [Fact]
+    public void SwId_rotates_per_send_and_is_never_zero()
+    {
+        var (t, c) = Create(w => [Long(w[1], w[2], w[3])]);
+        using var _ = c;
+
+        for (int i = 0; i < 20; i++)
+            c.Request(0x01, 0x09, 4, []);
+
+        byte[] swIds = t.RawWritten.Select(w => (byte)(w[3] & 0x0F)).ToArray();
+        Assert.All(swIds, s => Assert.InRange(s, (byte)1, (byte)0xF));
+        for (int i = 1; i < swIds.Length; i++)
+            Assert.NotEqual(swIds[i - 1], swIds[i]);
+    }
+
+    [Fact]
+    public void Retry_uses_a_new_swId()
+    {
+        int writes = 0;
+        var (t, c) = Create(w => ++writes == 1 ? [] : [Long(w[1], w[2], w[3], 0x02)]);
+        using var _ = c;
+
+        c.Request(0x01, 0x09, 4, []);
+
+        Assert.NotEqual(t.RawWritten[0][3], t.RawWritten[1][3]);
+        Assert.Equal(t.RawWritten[0][3] & 0xF0, t.RawWritten[1][3] & 0xF0);
+    }
+
+    [Fact]
+    public void Debug_log_records_TX_and_RX_frames_as_hex()
+    {
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        var t = new FakeHidTransport { Responder = w => [Long(w[1], w[2], w[3], 0x07)] };
+        using var c = new HidppClient(t, ShortTimeout, log: log);
+
+        c.Request(0x01, 0x0E, 4, []);
+        SpinWait.SpinUntil(() => log.Lines.Count >= 2, 2000);
+
+        string sent = HexFormat.Frame(t.RawWritten[0]);
+        Assert.StartsWith("11 01 0E 4", sent);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Debug && l.Message == "TX " + sent);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Debug && l.Message.StartsWith("RX 11 01 0E 4", StringComparison.Ordinal)
+            && l.Message.Contains(" 07 00", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Frame_logging_is_skipped_when_debug_is_off()
+    {
+        var log = new Tray.ProfileWorkerTests.ListLog { MinLevel = Core.Tray.LogLevel.Info };
+        var t = new FakeHidTransport { Responder = w => [Long(w[1], w[2], w[3], 0x07)] };
+        using var c = new HidppClient(t, ShortTimeout, log: log);
+
+        c.Request(0x01, 0x0E, 4, []);
+        t.Push(Long(0x01, 0x0E, 0x00, 0x01)); // notification
+        Thread.Sleep(50);
+
+        Assert.Empty(log.Lines);
+    }
+
+    [Fact]
     public void Two_timeouts_throw_TimeoutException()
     {
         var (t, c) = Create();
