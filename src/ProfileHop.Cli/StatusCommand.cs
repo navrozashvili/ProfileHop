@@ -4,7 +4,11 @@ using ProfileHop.Core.Hidpp;
 
 namespace ProfileHop.Cli;
 
-/// <summary><c>status</c>: onboard mode, profile count, enabled profiles, current profile, DPI slot. Read-only.</summary>
+/// <summary>
+/// <c>status [--force-onboard] [--raw]</c>: onboard mode, profile count, enabled profiles, current profile, DPI slot.
+/// <c>--raw</c> also hex-dumps sector 0x0000 (memoryRead, read-only). Read-only unless <c>--force-onboard</c> switches
+/// host mode back to onboard.
+/// </summary>
 internal static class StatusCommand
 {
     public static int Run(IHidDeviceSource source, string[] args)
@@ -19,6 +23,23 @@ internal static class StatusCommand
             ProfilesDescription d = controller.GetProfilesDescription();
             ProfileState s = controller.GetState();
             Print(d, s);
+            if (!args.Contains("--raw"))
+                return 0;
+
+            Console.WriteLine();
+            byte[] raw;
+            try
+            {
+                raw = controller.ReadSector(ProfileDirectory.Sector);
+            }
+            catch (HidppException ex)
+            {
+                Console.Error.WriteLine($"memoryRead of sector 0x0000 rejected: {ex.Message}");
+                return 1;
+            }
+            Console.WriteLine($"Sector 0x0000 (profile directory), {raw.Length} bytes via memoryRead:");
+            foreach (string line in HexFormat.Dump(raw))
+                Console.WriteLine("  " + line);
             return 0;
         }
         catch (MouseNotFoundException ex)

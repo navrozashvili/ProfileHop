@@ -1,11 +1,13 @@
 using ProfileHop.Core.Hid;
+using ProfileHop.Core.Tray;
 
 namespace ProfileHop.Core.Hidpp;
 
 /// <summary>
 /// HID++ 2.0 request/response over an <see cref="IHidTransport"/>. One request in flight at a time; a background
 /// pump reads every input report and either completes the pending request, raises <see cref="Notification"/>
-/// (swId 0), or drops the report. Does not own the transport.
+/// (swId 0), or drops the report. Does not own the transport. With a log at Debug level every sent (TX) and received
+/// (RX) report is hex-dumped.
 /// </summary>
 public sealed class HidppClient : IDisposable
 {
@@ -14,6 +16,7 @@ public sealed class HidppClient : IDisposable
     private readonly IHidTransport _transport;
     private readonly TimeSpan _timeout;
     private readonly TimeProvider _time;
+    private readonly ILog? _log;
     private readonly CancellationTokenSource _cts = new();
     private readonly Lock _requestLock = new();
     private readonly Lock _pendingLock = new();
@@ -22,11 +25,12 @@ public sealed class HidppClient : IDisposable
     private byte _swId; // last software ID sent; guarded by _requestLock
     private volatile bool _closed;
 
-    public HidppClient(IHidTransport transport, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
+    public HidppClient(IHidTransport transport, TimeSpan? timeout = null, TimeProvider? timeProvider = null, ILog? log = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _timeout = timeout ?? DefaultTimeout;
         _time = timeProvider ?? TimeProvider.System;
+        _log = log;
         _pump = Task.Run(PumpAsync);
     }
 
@@ -60,6 +64,7 @@ public sealed class HidppClient : IDisposable
                 lock (_pendingLock) _pending = pending;
                 try
                 {
+                    LogFrame("TX ", frame);
                     _transport.Write(frame);
                     return pending.Completion.Task.WaitAsync(_timeout, _time).GetAwaiter().GetResult().Params;
                 }
@@ -120,8 +125,16 @@ public sealed class HidppClient : IDisposable
         }
     }
 
+    /// <summary>Hex-dumps a frame at Debug; formats nothing unless Debug is enabled.</summary>
+    private void LogFrame(string direction, byte[] frame)
+    {
+        if (_log is { } log && log.IsEnabled(LogLevel.Debug))
+            log.Write(LogLevel.Debug, direction + HexFormat.Frame(frame));
+    }
+
     private void Dispatch(byte[] report)
     {
+        LogFrame("RX ", report);
         if (!HidppMessage.TryDecode(report, out HidppMessage msg))
             return;
 

@@ -16,6 +16,15 @@ public class FeatureNamesTests
     }
 
     [Fact]
+    public void Names_match_the_real_probe_fixture()
+    {
+        var features = Fakes.ProbeFixture.Features();
+
+        Assert.Equal(36, features.Count);
+        Assert.All(features, f => Assert.Equal(f.Name, FeatureNames.Get(f.Id)));
+    }
+
+    [Fact]
     public void Unknown_id_returns_null()
     {
         Assert.Null(FeatureNames.Get(0xABCD));

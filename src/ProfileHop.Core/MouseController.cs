@@ -171,6 +171,23 @@ public sealed class MouseController : IProfileSwitcher
 
     public ProfileState GetState() => Execute(ReadState);
 
+    /// <summary>
+    /// Whole onboard sector (sector size bytes) via memoryRead (function 5, read-only), in 16-byte chunks; like
+    /// libratbag the last chunk is read from <c>sectorSize - 16</c>. For the CLI's <c>status --raw</c>.
+    /// </summary>
+    public byte[] ReadSector(ushort sector) => Execute(c =>
+    {
+        const int chunk = 16;
+        int size = Math.Max((int)c.Description.SectorSize, chunk);
+        var data = new byte[size];
+        for (int offset = 0; offset < size; offset += chunk)
+        {
+            int at = Math.Min(offset, size - chunk);
+            c.Onboard.MemoryRead(sector, (ushort)at).CopyTo(data, at);
+        }
+        return data;
+    });
+
     public ProfileState SetProfile(int profile)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(profile, 1);
@@ -365,7 +382,7 @@ public sealed class MouseController : IProfileSwitcher
                     continue;
                 }
 
-                var client = new HidppClient(transport, _timeout, _time);
+                var client = new HidppClient(transport, _timeout, _time, _log);
                 var opened = new Opened(device, transport, client);
                 open.Add(opened);
                 var found = new List<Candidate>();
