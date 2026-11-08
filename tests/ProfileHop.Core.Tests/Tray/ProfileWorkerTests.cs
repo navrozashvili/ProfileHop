@@ -331,18 +331,24 @@ public class ProfileWorkerTests
     }
 
     [Fact]
-    public void Device_change_marks_stale_without_touching_the_mouse_when_reachable()
+    public void Device_change_burst_marks_stale_and_reconnects_once_when_reachable()
     {
-        var (worker, mouse, _) = Create();
+        // Reconnecting re-subscribes the profile-change notifications (mouse-button switches); without it the tray
+        // would stop following the mouse after any HID arrival or resume.
+        var (worker, mouse, statuses) = Create();
         worker.RequestRefresh();
         worker.ProcessPending();
         mouse.Calls.Clear();
+        statuses.Clear();
 
+        worker.NotifyDeviceChange();
         worker.NotifyDeviceChange();
         worker.NotifyDeviceChange();
         worker.ProcessPending();
 
-        Assert.Equal(["stale"], mouse.Calls);
+        Assert.Equal(["stale", "get"], mouse.Calls);
+        Assert.True(Assert.Single(statuses).IsReachable);
+        Assert.False(worker.ProcessPending());
     }
 
     [Fact]
