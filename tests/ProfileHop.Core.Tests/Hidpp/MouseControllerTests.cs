@@ -1,0 +1,393 @@
+using ProfileHop.Core.Hidpp;
+using ProfileHop.Core.Tests.Hidpp.Fakes;
+using static ProfileHop.Core.Tests.Hidpp.Fakes.Frames;
+
+namespace ProfileHop.Core.Tests.Hidpp;
+
+public sealed class MouseControllerTests : IDisposable
+{
+    private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(40);
+
+    private readonly FakeHidDeviceSource _source = new();
+    private readonly SimulatedReceiver _receiver = new();
+    private readonly SimulatedDevice _mouse = new();
+    private MouseController? _controller;
+
+    private MouseController Controller => _controller ??= new MouseController(_source, Timeout);
+
+    public void Dispose() => _controller?.Dispose();
+
+    private Core.Hid.HidDevice AddReceiverWithMouseAt(byte index, ushort pid = 0xC54D)
+    {
+        _receiver.Paired[index] = _mouse;
+        return _source.Add("receiver-" + pid.ToString("X4"), pid, _receiver.Handle);
+    }
+
+    private static SimulatedDevice Keyboard() => new() { Name = "G915 KEYBOARD", DeviceType = 0 };
+
+    // ---- connect / probe ----
+
+    [Fact]
+    public void Connect_finds_mouse_at_index_1_on_receiver()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0x01, m.DeviceIndex);
+        Assert.Equal(0xC54D, m.ProductId);
+        Assert.Equal(new ProtocolVersion(4, 2), m.Version);
+        Assert.Equal("PRO X2 SUPERSTRIKE", m.Name);
+        Assert.Equal((byte)3, m.DeviceType);
+        Assert.False(m.TypeFallback);
+    }
+
+    [Fact]
+    public void Connect_probes_indexes_1_to_6_in_order_with_getProtocolVersion()
+    {
+        AddReceiverWithMouseAt(0x03);
+        Controller.Connect();
+
+        var probes = _source.Opened.Single().Transport.Written
+            .Where(w => w[2] == 0x00 && w[3] == 0x1B).Select(w => w[1]).ToList();
+
+        Assert.Equal(new byte[] { 0x01, 0x02, 0x03 }, probes.Take(3));
+        Assert.Equal(0x03, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Probe_frame_is_root_getProtocolVersion_with_ping()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Connect();
+
+        byte[] first = _source.Opened.Single().Transport.Written[0];
+
+        Assert.Equal(new byte[] { 0x11, 0x01, 0x00, 0x1B, 0x00, 0x00 }, first[..6]);
+    }
+
+    [Fact]
+    public void Connect_finds_wired_mouse_at_0xFF_after_silent_indexes()
+    {
+        var wired = new SimulatedDevice();
+        _source.Add("wired", 0xC0A1, req => req[1] == 0xFF ? wired.Handle(req) : []);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0xFF, m.DeviceIndex);
+    }
+
+    [Fact]
+    public void Asleep_and_unknown_indexes_are_skipped()
+    {
+        _receiver.Asleep.Add(0x01);
+        AddReceiverWithMouseAt(0x02);
+
+        Assert.Equal(0x02, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Hidpp1_device_is_skipped()
+    {
+        _receiver.Paired[0x01] = new SimulatedDevice { Major = 1, Minor = 0 };
+        AddReceiverWithMouseAt(0x02);
+
+        Assert.Equal(0x02, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Device_without_0x8100_is_skipped()
+    {
+        var plain = new SimulatedDevice();
+        plain.Features.Remove(0x8100);
+        _receiver.Paired[0x01] = plain;
+        AddReceiverWithMouseAt(0x02);
+
+        Assert.Equal(0x02, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Keyboard_with_0x8100_on_first_receiver_loses_to_mouse_on_second()
+    {
+        var kbReceiver = new SimulatedReceiver();
+        kbReceiver.Paired[0x01] = Keyboard();
+        var first = _source.Add("receiver-C53A", 0xC53A, kbReceiver.Handle);
+        AddReceiverWithMouseAt(0x01, 0xC54D);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0xC54D, m.ProductId);
+        Assert.Equal("PRO X2 SUPERSTRIKE", m.Name);
+        Assert.False(m.TypeFallback);
+        Assert.True(_source.LastTransportFor(first).IsDisposed);
+        Assert.False(_source.Opened.Last().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void Keyboard_and_mouse_on_same_receiver_picks_mouse()
+    {
+        _receiver.Paired[0x01] = Keyboard();
+        AddReceiverWithMouseAt(0x02);
+
+        Assert.Equal(0x02, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Falls_back_to_first_0x8100_device_when_none_is_a_mouse()
+    {
+        var kbReceiver = new SimulatedReceiver();
+        kbReceiver.Paired[0x01] = Keyboard();
+        _source.Add("receiver-C53A", 0xC53A, kbReceiver.Handle);
+        var nameless = new SimulatedDevice();
+        nameless.Features.Remove(0x0005);
+        _receiver.Paired[0x01] = nameless;
+        _source.Add("receiver-C54D", 0xC54D, _receiver.Handle);
+
+        ConnectedMouse m = Controller.Connect();
+
+        Assert.Equal(0xC53A, m.ProductId);
+        Assert.True(m.TypeFallback);
+        Assert.Equal((byte)0, m.DeviceType);
+    }
+
+    [Fact]
+    public void Probe_results_list_every_device_and_index_tried()
+    {
+        var kbReceiver = new SimulatedReceiver();
+        kbReceiver.Paired[0x01] = Keyboard();
+        _source.Add("receiver-C53A", 0xC53A, kbReceiver.Handle);
+        AddReceiverWithMouseAt(0x01);
+
+        Controller.Connect(fullScan: true);
+        IReadOnlyList<DeviceProbe> probes = Controller.LastProbe;
+
+        Assert.Equal(14, probes.Count);
+        DeviceProbe kb = probes.Single(p => p.ProductId == 0xC53A && p.DeviceIndex == 0x01);
+        Assert.Equal("G915 KEYBOARD", kb.Name);
+        Assert.Equal((byte)0, kb.DeviceType);
+        Assert.True(kb.HasOnboardProfiles);
+        DeviceProbe rx = probes.Single(p => p.ProductId == 0xC54D && p.DeviceIndex == 0xFF);
+        Assert.Null(rx.Version);
+        Assert.Contains("0x01", rx.Error);
+        Assert.Equal(0x01, Controller.Connect().DeviceIndex);
+    }
+
+    [Fact]
+    public void Nothing_found_throws_and_disposes_all_transports()
+    {
+        _source.Add("receiver-C53A", 0xC53A, new SimulatedReceiver().Handle);
+
+        Assert.Throws<MouseNotFoundException>(() => Controller.Connect());
+        Assert.All(_source.Opened, o => Assert.True(o.Transport.IsDisposed));
+    }
+
+    [Fact]
+    public void Connection_is_cached()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        Controller.GetState();
+        Controller.GetState();
+
+        Assert.Equal(1, _source.EnumerateCount);
+        Assert.Single(_source.Opened);
+    }
+
+    [Fact]
+    public void MarkStale_disposes_and_next_call_reconnects()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.GetState();
+        FakeHidTransport first = _source.Opened.Single().Transport;
+
+        Controller.MarkStale();
+
+        Assert.True(first.IsDisposed);
+        Controller.GetState();
+        Assert.Equal(2, _source.EnumerateCount);
+    }
+
+    // ---- state / switching ----
+
+    [Fact]
+    public void GetState_reads_mode_current_enabled_and_dpi()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.CurrentProfile = 2;
+        _mouse.DpiIndex = 3;
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Equal(1, s.OnboardMode);
+        Assert.Equal(2, s.CurrentProfile);
+        Assert.Equal([1, 2], s.EnabledProfiles);
+        Assert.Equal(3, s.DpiIndex);
+    }
+
+    [Fact]
+    public void GetState_with_unreadable_directory_returns_empty_enabled_list()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.Sectors.Remove(0x0000);
+
+        ProfileState s = Controller.GetState();
+
+        Assert.Empty(s.EnabledProfiles);
+        Assert.Equal(1, s.CurrentProfile);
+    }
+
+    [Fact]
+    public void SetProfile_sends_setCurrentProfile_and_confirms()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        ProfileState s = Controller.SetProfile(2);
+
+        Assert.Equal(2, s.CurrentProfile);
+        byte ob = _mouse.IndexOf(0x8100);
+        var written = _source.Opened.Single().Transport.Written;
+        int set = written.ToList().FindIndex(w => w.SequenceEqual(Long(0x01, ob, Fn(3), 0x00, 0x02)));
+        int get = written.ToList().FindIndex(w => w.SequenceEqual(Long(0x01, ob, Fn(4))));
+        Assert.True(set >= 0 && get > set);
+    }
+
+    [Fact]
+    public void SetProfile_mismatch_throws_and_marks_stale()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.IgnoreSetProfile = true;
+
+        Assert.Throws<HidppProtocolException>(() => Controller.SetProfile(2));
+        Assert.True(_source.Opened.Single().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void SetProfile_device_error_marks_stale_and_rethrows()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        var ex = Assert.Throws<HidppException>(() => Controller.SetProfile(9));
+        Assert.Equal(HidppError.InvalidArgument, ex.Error);
+        Assert.True(_source.Opened.Single().Transport.IsDisposed);
+    }
+
+    [Fact]
+    public void SetProfile_rejects_invalid_number_without_touching_device()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => Controller.SetProfile(0));
+        Assert.Empty(_source.Opened);
+    }
+
+    [Fact]
+    public void Transport_failure_marks_stale_and_rethrows()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.GetState();
+        FakeHidTransport t = _source.Opened.Single().Transport;
+        t.WriteException = new IOException("unplugged");
+
+        Assert.Throws<IOException>(() => Controller.GetState());
+        Assert.True(t.IsDisposed);
+    }
+
+    [Fact]
+    public void NextDpiSlot_moves_to_next_enabled_slot()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.DpiIndex = 1;
+
+        int next = Controller.NextDpiSlot();
+
+        Assert.Equal(2, next);
+        Assert.Equal(2, _mouse.DpiIndex);
+        byte ob = _mouse.IndexOf(0x8100);
+        Assert.Contains(_source.Opened.Single().Transport.Written, w => w.SequenceEqual(Long(0x01, ob, 0xCB, 2)));
+        Assert.Contains(_source.Opened.Single().Transport.Written, w => w.SequenceEqual(Long(0x01, ob, Fn(5), 0x00, 0x01, 0x00, 0x00)));
+    }
+
+    [Fact]
+    public void NextDpiSlot_wraps_past_disabled_slots()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.DpiIndex = 3; // profile 1 slots: 400, 800, 1600, 3200, 0
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+    }
+
+    [Fact]
+    public void NextDpiSlot_with_single_slot_stays()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.CurrentProfile = 2; // profile 2: only slot 0
+        _mouse.DpiIndex = 0;
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+    }
+
+    [Fact]
+    public void NextDpiSlot_wraps_at_5_when_profile_unreadable()
+    {
+        AddReceiverWithMouseAt(0x01);
+        _mouse.Sectors.Remove(0x0001);
+        _mouse.DpiIndex = 4;
+
+        Assert.Equal(0, Controller.NextDpiSlot());
+    }
+
+    // ---- notifications ----
+
+    [Fact]
+    public async Task Profile_notification_requeries_and_raises_event()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Connect();
+        var raised = new TaskCompletionSource<int>();
+        Controller.ProfileChangedByDevice += p => raised.TrySetResult(p);
+
+        _mouse.CurrentProfile = 2;
+        _source.Opened.Single().Transport.Push(Long(0x01, _mouse.IndexOf(0x8100), 0x00, 0x00, 0x02));
+
+        Assert.Equal(2, await raised.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task Other_notifications_are_ignored()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Connect();
+        int count = 0;
+        Controller.ProfileChangedByDevice += _ => Interlocked.Increment(ref count);
+        var t = _source.Opened.Single().Transport;
+        byte ob = _mouse.IndexOf(0x8100);
+
+        t.Push(Long(0x01, ob, 0x10, 0x02)); // DPI change (function 1)
+        t.Push(Long(0x01, 0x04, 0x00, 0x00, 0x02)); // other feature
+        t.Push(Long(0x02, ob, 0x00, 0x00, 0x02)); // other device index
+        await Task.Delay(150);
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void Dispose_closes_transport_and_blocks_further_use()
+    {
+        AddReceiverWithMouseAt(0x01);
+        Controller.Connect();
+
+        Controller.Dispose();
+
+        Assert.True(_source.Opened.Single().Transport.IsDisposed);
+        Assert.Throws<ObjectDisposedException>(() => Controller.GetState());
+    }
+
+    [Fact]
+    public void Feature_table_and_description_are_available_for_the_cli()
+    {
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Equal(_mouse.Features, Controller.GetFeatureTable().Select(f => f.Id));
+        Assert.Equal(3, Controller.GetProfilesDescription().ProfileCount);
+    }
+}
