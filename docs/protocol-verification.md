@@ -103,6 +103,23 @@ hidpp20.py:1556). `HIDPP20_DPI_COUNT 5` hidpp20.h:622. A slot whose DPI is 0 is 
 the next slot in 0..4 whose DPI is non-zero, wrapping. If no slot is non-zero it wraps over all 5 slots.
 The profile's sector is taken to equal its profile number (Solaar convention, above).
 
+## Device name and type (0x0005) — added for choosing the mouse among several receivers
+
+Not in the plan; added because the user's PC has two LIGHTSPEED receivers and keyboards can also have 0x8100.
+Only Solaar implements the calls; libratbag just defines the page ID.
+
+| Item | Source | Decision |
+| --- | --- | --- |
+| Feature ID | `HIDPP_PAGE_DEVICE_NAME 0x0005` hidpp20.h:123; `DEVICE_NAME = 0x0005` hidpp20_constants.py:39 | 0x0005 |
+| getDeviceNameCount | function 0: `feature_request(DEVICE_NAME)` → `ord(reply[:1])` = name length, hidpp20.py:1857-1859 | reply [length] |
+| getDeviceName | function 1: `feature_request(DEVICE_NAME, 0x10, len(name))`, param = char offset, reply = next chars, truncated to the remaining length, hidpp20.py:1862-1865; decoded as UTF-8 hidpp20.py:1870 | loop until `length` chars (bounded at 16 calls) |
+| getDeviceType | function 2: `feature_request(DEVICE_NAME, 0x20)` → `ord(reply[:1])`, hidpp20.py:1843-1845 | reply [type] |
+| Type codes | `DEVICE_KIND`: 0 keyboard, 1 remote control, 2 numpad, **3 mouse**, 4 touchpad, 5 trackball, 6 presenter, 7 receiver — hidpp20_constants.py:251-259 | "is a mouse" = type 3 |
+
+Selection in `MouseController.Connect`: every enumerated device, indexes 0x01–0x06 then 0xFF; candidates are HID++ ≥ 2.0
+with 0x8100. The first candidate whose type is 3 (mouse) wins; if none reports mouse (or 0x0005 is missing/fails), the
+first candidate is used and `ConnectedMouse.TypeFallback` is set so the CLI can say so.
+
 ## Disagreements with the plan / between sources
 
 1. **getCurrentProfile base.** Solaar treats the reply's first two bytes as the 1-based profile sector (same value it
