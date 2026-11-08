@@ -560,7 +560,10 @@ public class ProfileWorkerTests
     {
         public List<(LogLevel Level, string Message)> Lines { get; } = [];
 
-        public bool IsEnabled(LogLevel level) => true;
+        public LogLevel MinLevel { get; set; } = LogLevel.Debug;
+
+        /// <summary>Calls to IsEnabled; Write records every line, even below MinLevel, so tests can catch skipped checks.</summary>
+        public bool IsEnabled(LogLevel level) => level >= MinLevel;
 
         public void Write(LogLevel level, string message)
         {

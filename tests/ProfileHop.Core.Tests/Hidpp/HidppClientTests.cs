@@ -185,6 +185,37 @@ public class HidppClientTests
     }
 
     [Fact]
+    public void Debug_log_records_TX_and_RX_frames_as_hex()
+    {
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        var t = new FakeHidTransport { Responder = w => [Long(w[1], w[2], w[3], 0x07)] };
+        using var c = new HidppClient(t, ShortTimeout, log: log);
+
+        c.Request(0x01, 0x0E, 4, []);
+        SpinWait.SpinUntil(() => log.Lines.Count >= 2, 2000);
+
+        string sent = HexFormat.Frame(t.RawWritten[0]);
+        Assert.StartsWith("11 01 0E 4", sent);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Debug && l.Message == "TX " + sent);
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Debug && l.Message.StartsWith("RX 11 01 0E 4", StringComparison.Ordinal)
+            && l.Message.Contains(" 07 00", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Frame_logging_is_skipped_when_debug_is_off()
+    {
+        var log = new Tray.ProfileWorkerTests.ListLog { MinLevel = Core.Tray.LogLevel.Info };
+        var t = new FakeHidTransport { Responder = w => [Long(w[1], w[2], w[3], 0x07)] };
+        using var c = new HidppClient(t, ShortTimeout, log: log);
+
+        c.Request(0x01, 0x0E, 4, []);
+        t.Push(Long(0x01, 0x0E, 0x00, 0x01)); // notification
+        Thread.Sleep(50);
+
+        Assert.Empty(log.Lines);
+    }
+
+    [Fact]
     public void Two_timeouts_throw_TimeoutException()
     {
         var (t, c) = Create();

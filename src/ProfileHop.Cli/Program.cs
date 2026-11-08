@@ -21,8 +21,9 @@ internal static class Program
         Console.WriteLine("profilehop-cli <command>");
         Console.WriteLine("  list               List Logitech HID++ collections");
         Console.WriteLine("  probe              Find the mouse and dump its HID++ feature table");
-        Console.WriteLine("  status [--force-onboard]");
-        Console.WriteLine("                     Show onboard mode, profiles, current profile, DPI slot");
+        Console.WriteLine("  status [--force-onboard] [--raw]");
+        Console.WriteLine("                     Show onboard mode, profiles, current profile, DPI slot;");
+        Console.WriteLine("                     --raw also hex-dumps the profile directory (sector 0x0000, read-only)");
         Console.WriteLine("  set-profile <n> [--force-onboard]");
         Console.WriteLine("                     Activate onboard profile n");
         Console.WriteLine();

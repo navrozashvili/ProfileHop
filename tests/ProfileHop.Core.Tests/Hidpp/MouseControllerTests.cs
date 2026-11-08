@@ -653,6 +653,43 @@ public sealed class MouseControllerTests : IDisposable
     }
 
     [Fact]
+    public void Controller_passes_its_log_to_the_HID_client()
+    {
+        AddReceiverWithMouseAt(0x01);
+        var log = new Tray.ProfileWorkerTests.ListLog();
+        _controller = new MouseController(_source, Timeout, log: log);
+
+        Controller.Connect();
+
+        Assert.Contains(log.Lines, l => l.Level == Core.Tray.LogLevel.Debug && l.Message.StartsWith("TX 11 01 00 1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ReadSector_reads_the_whole_directory_sector_with_memoryRead_only()
+    {
+        AddReceiverWithMouseAt(0x01); // sector size 255, like the real mouse
+
+        byte[] raw = Controller.ReadSector(0x0000);
+
+        Assert.Equal(255, raw.Length);
+        Assert.Equal(_mouse.Sectors[0x0000][..255], raw);
+        Assert.All(_mouse.Calls, c => Assert.True(c.Function is 0 or 2 or 5, $"function {c.Function}"));
+        Assert.Contains(_mouse.Calls, c => c.Function == 5 && c.Params[2] == 0 && c.Params[3] == 0xEF); // last chunk: 255 - 16
+    }
+
+    [Fact]
+    public void Real_feature_table_from_probe_fixture_finds_onboard_profiles_at_0x0E()
+    {
+        _mouse.Features.Clear();
+        _mouse.Features.AddRange(ProbeFixture.FeatureIds());
+        AddReceiverWithMouseAt(0x01);
+
+        Assert.Equal(36, Controller.GetFeatureTable().Count);
+        Assert.Equal(0x0E, _mouse.IndexOf(0x8100));
+        Assert.Equal(1, Controller.GetState().CurrentProfile);
+    }
+
+    [Fact]
     public void Feature_table_and_description_are_available_for_the_cli()
     {
         AddReceiverWithMouseAt(0x01);
