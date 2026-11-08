@@ -173,16 +173,24 @@ public class ConfigStoreTests
     }
 
     [Fact]
+    public void Device_defaults_to_automatic()
+    {
+        Assert.Null(new AppConfig().Device);
+    }
+
+    [Fact]
     public void Save_round_trips()
     {
         using var dir = new TempDir();
         var path = dir.File("config.json");
-        var c = new AppConfig { Sound = true, Cycle = [2, 1], LogLevel = LogLevel.Warning };
+        var c = new AppConfig { Sound = true, Cycle = [2, 1], LogLevel = LogLevel.Warning, Device = "receiver:046d:c547" };
 
         ConfigStore.Save(path, c);
         var r = ConfigStore.Load(path);
 
         Assert.Empty(r.Errors);
+        Assert.Contains("\"device\": \"receiver:046d:c547\"", File.ReadAllText(path));
+        Assert.Equal("receiver:046d:c547", r.Config.Device);
         Assert.True(r.Config.Sound);
         Assert.Equal([2, 1], r.Config.Cycle);
         Assert.Equal(LogLevel.Warning, r.Config.LogLevel);

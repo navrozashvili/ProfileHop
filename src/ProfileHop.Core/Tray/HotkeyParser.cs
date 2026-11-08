@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace ProfileHop.Core.Tray;
 
@@ -13,28 +14,56 @@ public enum HotkeyModifiers : uint
     Win = 0x8,
 }
 
-/// <summary>A parsed hotkey: RegisterHotKey modifiers plus a virtual-key code.</summary>
+/// <summary>A parsed hotkey: RegisterHotKey modifiers plus a virtual-key code. <see cref="ToString"/> gives the
+/// canonical config text ("Ctrl+Alt+F9") that <see cref="HotkeyParser.Parse"/> reads back.</summary>
 public readonly record struct Hotkey(HotkeyModifiers Modifiers, uint VirtualKey)
 {
-    public override string ToString()
-    {
-        var parts = new List<string>(5);
-        if (Modifiers.HasFlag(HotkeyModifiers.Control)) parts.Add("Ctrl");
-        if (Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
-        if (Modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
-        if (Modifiers.HasFlag(HotkeyModifiers.Win)) parts.Add("Win");
-        parts.Add(HotkeyParser.KeyName(VirtualKey));
-        return string.Join('+', parts);
-    }
+    public override string ToString() => HotkeyParser.Format(this);
 }
 
-/// <summary>Parses strings like "Ctrl+Alt+F9" (case-insensitive; Ctrl/Control, Alt, Shift, Win; F1–F24, A–Z, 0–9).</summary>
+/// <summary>
+/// Parses and formats strings like "Ctrl+Alt+F9" (case-insensitive). Modifiers: Ctrl/Control, Alt, Shift, Win.
+/// Keys: F1–F24, A–Z, 0–9, and the names in <see cref="KeyNames"/> (Home, PageUp, Numpad5, …).
+/// </summary>
 public static class HotkeyParser
 {
     private const uint VkF1 = 0x70;
 
+    private static readonly (string Name, uint Vk)[] Named =
+    [
+        ("Space", 0x20), ("PageUp", 0x21), ("PageDown", 0x22), ("End", 0x23), ("Home", 0x24),
+        ("Left", 0x25), ("Up", 0x26), ("Right", 0x27), ("Down", 0x28),
+        ("Insert", 0x2D), ("Delete", 0x2E), ("Pause", 0x13),
+        ("Numpad0", 0x60), ("Numpad1", 0x61), ("Numpad2", 0x62), ("Numpad3", 0x63), ("Numpad4", 0x64),
+        ("Numpad5", 0x65), ("Numpad6", 0x66), ("Numpad7", 0x67), ("Numpad8", 0x68), ("Numpad9", 0x69),
+        ("NumpadMultiply", 0x6A), ("NumpadAdd", 0x6B), ("NumpadSubtract", 0x6D), ("NumpadDecimal", 0x6E),
+        ("NumpadDivide", 0x6F),
+    ];
+
+    private static readonly Dictionary<string, uint> NameToVk = BuildNameToVk();
+    private static readonly Dictionary<uint, string> VkToName = BuildVkToName();
+
+    /// <summary>Every canonical key name the parser accepts (excluding modifiers).</summary>
+    public static IReadOnlyList<string> KeyNames { get; } = [.. VkToName.Values];
+
+    /// <summary>True if <paramref name="vk"/> has a name, i.e. it can be written to config and parsed back.</summary>
+    public static bool IsSupportedKey(uint vk) => VkToName.ContainsKey(vk);
+
     public static Hotkey Parse(string text) =>
         TryParse(text, out var hotkey, out var error) ? hotkey : throw new FormatException(error);
+
+    public static string Format(Hotkey hotkey)
+    {
+        var parts = new List<string>(5);
+        if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Control)) parts.Add("Ctrl");
+        if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
+        if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
+        if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Win)) parts.Add("Win");
+        parts.Add(VkToName.TryGetValue(hotkey.VirtualKey, out var name)
+            ? name
+            : "0x" + hotkey.VirtualKey.ToString("X2", CultureInfo.InvariantCulture));
+        return string.Join('+', parts);
+    }
 
     public static bool TryParse(string? text, out Hotkey hotkey, [NotNullWhen(false)] out string? error)
     {
@@ -68,10 +97,10 @@ public static class HotkeyParser
                 continue;
             }
 
-            var vk = ParseKey(part);
-            if (vk is null)
+            if (!NameToVk.TryGetValue(part, out var vk))
             {
-                error = $"Hotkey '{text}' has an unknown key '{part}'. Use Ctrl, Alt, Shift, Win plus F1–F24, A–Z or 0–9.";
+                error = $"Hotkey '{text}' has an unknown key '{part}'. Use Ctrl, Alt, Shift, Win plus F1–F24, A–Z, 0–9, "
+                    + "Home, End, Insert, Delete, PageUp, PageDown, Up, Down, Left, Right, Space, Pause or Numpad0–9.";
                 return false;
             }
             if (key is not null)
@@ -100,9 +129,6 @@ public static class HotkeyParser
         return true;
     }
 
-    internal static string KeyName(uint vk) =>
-        vk >= VkF1 && vk < VkF1 + 24 ? $"F{vk - VkF1 + 1}" : ((char)vk).ToString();
-
     private static HotkeyModifiers ParseModifier(string part) => part.ToUpperInvariant() switch
     {
         "CTRL" or "CONTROL" => HotkeyModifiers.Control,
@@ -112,15 +138,24 @@ public static class HotkeyParser
         _ => HotkeyModifiers.None,
     };
 
-    private static uint? ParseKey(string part)
+    private static Dictionary<uint, string> BuildVkToName()
     {
-        var upper = part.ToUpperInvariant();
-        if (upper.Length == 1 && (upper[0] is >= 'A' and <= 'Z' || upper[0] is >= '0' and <= '9'))
-            return upper[0];
-        if (upper.Length is 2 or 3 && upper[0] == 'F' && upper[1] != '0'
-            && int.TryParse(upper.AsSpan(1), System.Globalization.NumberStyles.None, null, out var n)
-            && n is >= 1 and <= 24)
-            return VkF1 + (uint)(n - 1);
-        return null;
+        var map = new Dictionary<uint, string>();
+        for (uint i = 0; i < 24; i++) map[VkF1 + i] = "F" + (i + 1).ToString(CultureInfo.InvariantCulture);
+        for (var c = 'A'; c <= 'Z'; c++) map[c] = c.ToString();
+        for (var c = '0'; c <= '9'; c++) map[c] = c.ToString();
+        foreach (var (name, vk) in Named) map[vk] = name;
+        return map;
+    }
+
+    private static Dictionary<string, uint> BuildNameToVk()
+    {
+        var map = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (vk, name) in BuildVkToName()) map[name] = vk;
+        map["Del"] = 0x2E;
+        map["Ins"] = 0x2D;
+        map["PgUp"] = 0x21;
+        map["PgDn"] = 0x22;
+        return map;
     }
 }

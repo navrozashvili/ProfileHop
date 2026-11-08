@@ -26,6 +26,9 @@ public sealed class AppConfig
 
     public LogLevel LogLevel { get; set; } = LogLevel.Info;
 
+    /// <summary>Which device to control (key chosen from the tray's Device menu); null = automatic.</summary>
+    public string? Device { get; set; }
+
     internal static List<ProfileName> DefaultProfiles() => [new(1, "Normal"), new(2, "Game")];
 
     internal static List<HotkeyBinding> DefaultHotkeys() =>
