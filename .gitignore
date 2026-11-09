@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 .superpowers/
 
 .claude/worktrees/
+
+# Local design notes
+docs/
