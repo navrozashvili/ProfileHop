@@ -26,6 +26,9 @@ DestroyMenu
 SetForegroundWindow
 GetCursorPos
 MessageBeep
+SetTimer
+KillTimer
+WM_TIMER
 GetSystemMetrics
 GetSystemMetricsForDpi
 WM_DPICHANGED

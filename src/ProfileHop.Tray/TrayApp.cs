@@ -24,6 +24,8 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private const uint ModNoRepeat = 0x4000;
     private const uint DbtDevtypDeviceInterface = 5;
     private const string ClassName = "ProfileHopTray";
+    private const nuint SwitchNotifyTimerId = 1;
+    private const uint SwitchNotifyDelayMs = 400; // hotkey presses closer than this show only the last switch notification
 
     // GUID_DEVINTERFACE_HID
     private static readonly Guid HidInterfaceGuid = new(0x4D1E55B2, 0xF16F, 0x11CF, 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30);
@@ -59,6 +61,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
     private volatile DeviceListResult? _devicesResult; // latest DevicesChanged result (set on the worker thread)
     private ForegroundWatcher? _watcher;
     private string? _currentApp;        // key of the last non-shell app in front (per-app profiles); null = not known yet
+    private (string Title, string Text)? _pendingSwitchNotice; // debounced switch notification; the one-shot timer runs only while set
 
     /// <param name="acceptPostedCommands">Run menu ids posted as WM_COMMAND by other processes (only for --no-mouse).</param>
     public TrayApp(string configPath, ConfigLoadResult loaded, RollingLog log, ProfileWorker worker, Autostart autostart,
@@ -191,6 +194,10 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 OnDevicesListed();
                 return new LRESULT(0);
 
+            case PInvoke.WM_TIMER when wParam.Value == SwitchNotifyTimerId:
+                FlushSwitchNotification();
+                return new LRESULT(0);
+
             case PInvoke.WM_INITMENUPOPUP:
                 if (!_deviceMenu.IsNull && (nint)wParam.Value == (nint)_deviceMenu.Value && !_deviceMenuFilled) FillDeviceMenu();
                 return new LRESULT(0);
@@ -250,6 +257,7 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
         _worker.StatusChanged -= OnWorkerStatus;
         _worker.DevicesChanged -= OnWorkerDevices;
         HotkeyDialog.Current?.Close(saved: false);
+        CancelSwitchNotification();
         DisposeWatcher();
         UnregisterHotkeys();
         if (!_devNotify.IsNull)
@@ -510,16 +518,14 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
             && status.State!.CurrentProfile != previous.State!.CurrentProfile;
         if (status.Notice is { } notice)
         {
+            CancelSwitchNotification(); // the failure is newer news than a pending "switched to" notification
             if (_config.Balloon) ShowBalloon("ProfileHop", notice, warning: true);
         }
         else if (switched || status.User is { Announce: true })
         {
             if (switched && _config.Sound) PInvoke.MessageBeep(MESSAGEBOX_STYLE.MB_OK);
             if (status.User is { Announce: true } && _config.SwitchNotification)
-            {
-                var (title, text) = TrayText.SwitchNotification(status.State!, _config.Profiles);
-                ShowBalloon(title, text, warning: false, realtime: true);
-            }
+                QueueSwitchNotification(TrayText.SwitchNotification(status.State!, _config.Profiles));
         }
         else if (status.Kind == WorkerStatusKind.Unreachable && previous.Kind != WorkerStatusKind.Unreachable && _config.Balloon)
         {
@@ -527,6 +533,29 @@ internal sealed unsafe class TrayApp : IDisposable, IHotkeyDialogHost
                 ? "Mouse not reachable. The next hotkey press retries."
                 : $"{Tooltip()["ProfileHop: ".Length..]}. The next hotkey press retries.", warning: true);
         }
+    }
+
+    /// <summary>Debounces the switch notification: each call replaces the pending text and restarts the one-shot
+    /// timer, so a burst of hotkey presses shows only the last profile.</summary>
+    private void QueueSwitchNotification((string Title, string Text) notice)
+    {
+        _pendingSwitchNotice = notice;
+        if (PInvoke.SetTimer(_hwnd, SwitchNotifyTimerId, SwitchNotifyDelayMs, null) == 0) FlushSwitchNotification();
+    }
+
+    private void FlushSwitchNotification()
+    {
+        PInvoke.KillTimer(_hwnd, SwitchNotifyTimerId);
+        if (_pendingSwitchNotice is not { } notice) return;
+        _pendingSwitchNotice = null;
+        ShowBalloon(notice.Title, notice.Text, warning: false, realtime: true);
+    }
+
+    private void CancelSwitchNotification()
+    {
+        if (_pendingSwitchNotice is null) return;
+        _pendingSwitchNotice = null;
+        PInvoke.KillTimer(_hwnd, SwitchNotifyTimerId);
     }
 
     private string Tooltip() => TrayText.Tooltip(_shown, _config.Profiles);
