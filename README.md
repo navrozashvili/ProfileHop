@@ -1,14 +1,25 @@
 # ProfileHop
 
-A tiny Windows tray app that switches a Logitech **PRO X2 SUPERSTRIKE** between its onboard profiles with a global
-hotkey — DPI and HITS click settings change together, because both live in the profile on the mouse. No G HUB
-running. It sends one HID++ 2.0 command (OnboardProfiles `0x8100` setCurrentProfile) and never writes mouse memory.
+A tiny Windows tray app that switches a Logitech mouse between its onboard profiles with a global hotkey. Everything
+stored in the profile on the mouse (DPI slots, report rate, buttons, and on some mice click settings like HITS) changes
+together. No G HUB running. It sends one HID++ 2.0 command (OnboardProfiles `0x8100` setCurrentProfile) and never
+writes mouse memory.
 
 Native AOT, ~3 MB exe, a few MB of RAM, 0% CPU at idle.
 
+## Supported mice
+
+Any Logitech mouse with **on-board profiles** (HID++ 2.0 feature `0x8100`), wired or over a LIGHTSPEED receiver —
+most G-series and PRO gaming mice. Run `profilehop-cli probe` to check yours: if it prints `ONBOARD_PROFILES (0x8100): present`,
+ProfileHop can switch it.
+
+Profile names and DPI in the menu and notifications are read for the common profile formats (1–5, as in libratbag)
+and for format `0x08` (PRO X2 SUPERSTRIKE). On other formats switching still works; only those details are missing.
+Tested on the PRO X2 SUPERSTRIKE — reports from other mice are welcome.
+
 ## Setup
 
-1. In G HUB, turn on **On-board memory mode**, set up the on-board slots (DPI + HITS per slot), then quit G HUB
+1. In G HUB, turn on **On-board memory mode**, set up the on-board profiles, then quit G HUB
    completely (it puts the mouse into host mode while running).
 2. Download `ProfileHop-win-x64.zip` from [Releases](../../releases), unzip anywhere, run `profilehop.exe`.
 3. Right-click the tray icon → **Start with Windows** if you want it at login.
@@ -71,4 +82,4 @@ dotnet test ProfileHop.slnx
 dotnet publish src/ProfileHop.Tray -c Release
 ```
 
-Every push to `main` builds, tests, and publishes a GitHub release. Protocol notes: `docs/protocol-verification.md`.
+Every push to `main` builds, tests, and publishes a GitHub release.
